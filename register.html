@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TaskFlow · Create account</title>
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Your existing styles.css -->
+    <link rel="stylesheet" href="styles.css">
+
+    <!-- Page specific tweaks (same design language) -->
+    <style>
+        /* micro adjustments to keep the register card consistent */
+        .register-card .input-wrapper .toggle-password {
+            right: 1rem;
+        }
+        .register-card .form-Group {
+            margin-bottom: 1.1rem;
+        }
+        .register-card .login-logo {
+            margin-bottom: 1.2rem;
+        }
+        .register-card .login-logo p {
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+        .strength-meter {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+            padding: 0 2px;
+        }
+        .strength-meter .bar {
+            height: 4px;
+            flex: 1;
+            border-radius: 4px;
+            background: var(--border);
+            transition: background 0.2s;
+        }
+        .strength-meter .bar.weak { background: var(--red); }
+        .strength-meter .bar.fair { background: var(--amber); }
+        .strength-meter .bar.good { background: var(--blue); }
+        .strength-meter .bar.strong { background: var(--green); }
+        .field-hint {
+            font-size: 0.7rem;
+            color: var(--muted);
+            margin-top: 6px;
+            letter-spacing: 0.2px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .field-hint i {
+            font-size: 0.7rem;
+        }
+        .terms-check {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            margin: 1.2rem 0 0.5rem;
+            font-size: 0.8rem;
+            color: var(--muted);
+        }
+        .terms-check input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            margin-top: 2px;
+            accent-color: var(--primary);
+            border-radius: 4px;
+            flex-shrink: 0;
+            cursor: pointer;
+        }
+        .terms-check a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .terms-check a:hover {
+            text-decoration: underline;
+        }
+        .password-wrapper {
+            position: relative;
+        }
+        .password-wrapper .toggle-password {
+            position: absolute;
+            right: 1rem;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: var(--muted);
+            cursor: pointer;
+            padding: 0.25rem;
+            transition: color 0.3s ease;
+            font-size: 1rem;
+            opacity: 0.6;
+            z-index: 2;
+        }
+        .password-wrapper .toggle-password:hover {
+            color: var(--text);
+            opacity: 1;
+        }
+        .password-wrapper input {
+            padding-right: 3rem;
+        }
+        .register-card .btn-primary {
+            margin-top: 0.5rem;
+        }
+        .login-footer {
+            margin-top: 1.25rem;
+        }
+        .floating-shapes .shape:nth-child(3) {
+            background: var(--blue);
+        }
+        /* ensure error/success states remain clean */
+        .auth-status {
+            margin-top: 0.75rem;
+            margin-bottom: 0.25rem;
+        }
+        .register-card .spinner {
+            border-color: rgba(255,255,255,0.25);
+            border-top-color: #fff;
+        }
+        @media (max-width: 480px) {
+            .terms-check {
+                font-size: 0.75rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-page">
+        <!-- FLOATING SHAPES (same as login) -->
+        <div class="floating-shapes">
+            <div class="shape"></div>
+            <div class="shape"></div>
+            <div class="shape"></div>
+        </div>
+
+        <!-- TOAST -->
+        <div class="toast" id="toast"></div>
+
+        <!-- REGISTER WRAPPER -->
+        <div class="login-wrapper">
+            <div class="login-card register-card">
+                
+                <!-- LOGO / HEADER -->
+                <div class="login-logo">
+                    <div class="brand-mark">T</div>
+                    <h1>Task<span>Flow</span></h1>
+                    <p>Create your free account</p>
+                </div>
+
+                <!-- STATUS MESSAGE -->
+                <div class="auth-status" id="authStatus"></div>
+
+                <!-- REGISTER FORM -->
+                <form class="login-form" id="registerForm" autocomplete="off">
+                    <!-- Full name -->
+                    <div class="form-Group">
+                        <label for="fullName">Full name</label>
+                        <div class="input-wrapper">
+                            <i class="fas fa-user"></i>
+                            <input 
+                                type="text" 
+                                id="fullName" 
+                                placeholder="Alex Rivera" 
+                                required
+                                autocomplete="name"
+                            />
+                        </div>
+                    </div>
+
+                    <!-- Email -->
+                    <div class="form-Group">
+                        <label for="email">Email address</label>
+                        <div class="input-wrapper">
+                            <i class="fas fa-envelope"></i>
+                            <input 
+                                type="email" 
+                                id="email" 
+                                placeholder="you@example.com" 
+                                required
+                                autocomplete="email"
+                            />
+                        </div>
+                    </div>
+
+                    <!-- Password -->
+                    <div class="form-Group">
+                        <label for="password">Password</label>
+                        <div class="input-wrapper password-wrapper">
+                            <i class="fas fa-lock"></i>
+                            <input 
+                                type="password" 
+                                id="password" 
+                                placeholder="Create a strong password" 
+                                required
+                                autocomplete="new-password"
+                                minlength="6"
+                            />
+                            <button type="button" class="toggle-password" id="togglePassword" aria-label="Toggle password visibility">
+                                <i class="fas fa-eye" id="eyeIcon"></i>
+                            </button>
+                        </div>
+                        <!-- strength meter -->
+                        <div class="strength-meter" id="strengthMeter">
+                            <span class="bar" id="bar1"></span>
+                            <span class="bar" id="bar2"></span>
+                            <span class="bar" id="bar3"></span>
+                            <span class="bar" id="bar4"></span>
+                        </div>
+                        <div class="field-hint">
+                            <i class="fas fa-info-circle"></i> Use 8+ characters with a mix of letters, numbers & symbols.
+                        </div>
+                    </div>
+
+                    <!-- Confirm password -->
+                    <div class="form-Group">
+                        <label for="confirmPassword">Confirm password</label>
+                        <div class="input-wrapper password-wrapper">
+                            <i class="fas fa-check-circle"></i>
+                            <input 
+                                type="password" 
+                                id="confirmPassword" 
+                                placeholder="Re-enter your password" 
+                                required
+                                autocomplete="new-password"
+                            />
+                            <button type="button" class="toggle-password" id="toggleConfirmPassword" aria-label="Toggle confirm password visibility">
+                                <i class="fas fa-eye" id="eyeConfirmIcon"></i>
+                            </button>
+                        </div>
+                    </div>
+
+
+                    <!-- Submit -->
+                    <button type="submit" class="btn btn-primary" id="registerBtn">
+                        <span id="registerText">Create account</span>
+                        <i class="fas fa-arrow-right" id="registerIcon"></i>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- SUPABASE + SCRIPT -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script>
+        (function() {
+            'use strict';
+
+            // =====================================================
+            // CONFIGURATION
+            // =====================================================
+            const SUPABASE_URL = "https://vjtxicimwuovikifkwyb.supabase.co";
+            const SUPABASE_ANON_KEY = "sb_publishable_GKDi350FTcPpHWwXfMapTw_hk2-8qaH";
+
+            // =====================================================
+            // INIT SUPABASE
+            // =====================================================
+            const supabase = window.supabase.createClient(
+                SUPABASE_URL,
+                SUPABASE_ANON_KEY,
+                {
+                    auth: {
+                        persistSession: true,
+                        storageKey: 'supabase-auth',
+                        storage: window.localStorage,
+                        autoRefreshToken: true,
+                        detectSessionInUrl: true
+                    }
+                }
+            );
+
+            // =====================================================
+            // DOM REFS
+            // =====================================================
+            const fullNameInput = document.getElementById('fullName');
+            const emailInput = document.getElementById('email');
+            const passwordInput = document.getElementById('password');
+            const confirmPasswordInput = document.getElementById('confirmPassword');
+            const termsCheckbox = document.getElementById('termsCheckbox');
+            const registerBtn = document.getElementById('registerBtn');
+            const registerText = document.getElementById('registerText');
+            const registerIcon = document.getElementById('registerIcon');
+            const authStatus = document.getElementById('authStatus');
+            const togglePassword = document.getElementById('togglePassword');
+            const eyeIcon = document.getElementById('eyeIcon');
+            const toggleConfirmPassword = document.getElementById('toggleConfirmPassword');
+            const eyeConfirmIcon = document.getElementById('eyeConfirmIcon');
+            const toast = document.getElementById('toast');
+            const loginLink = document.getElementById('loginLink');
+            const termsLink = document.getElementById('termsLink');
+            const privacyLink = document.getElementById('privacyLink');
+
+            // strength bars
+            const bars = [
+                document.getElementById('bar1'),
+                document.getElementById('bar2'),
+                document.getElementById('bar3'),
+                document.getElementById('bar4')
+            ];
+
+            // =====================================================
+            // UTILS
+            // =====================================================
+            function showStatus(message, type = 'info') {
+                authStatus.textContent = message;
+                authStatus.className = 'auth-status show ' + type;
+            }
+
+            function hideStatus() {
+                authStatus.className = 'auth-status';
+            }
+
+            function showToast(message, duration = 3000) {
+                toast.textContent = message;
+                toast.classList.add('show');
+                clearTimeout(toast._timeout);
+                toast._timeout = setTimeout(() => {
+                    toast.classList.remove('show');
+                }, duration);
+            }
+
+            function setLoading(isLoading) {
+                if (isLoading) {
+                    registerBtn.disabled = true;
+                    registerText.innerHTML = '<span class="spinner"></span> Creating...';
+                    registerIcon.style.display = 'none';
+                } else {
+                    registerBtn.disabled = false;
+                    registerText.textContent = 'Create account';
+                    registerIcon.style.display = 'inline';
+                }
+            }
+
+            // =====================================================
+            // PASSWORD TOGGLE (both fields)
+            // =====================================================
+            togglePassword.addEventListener('click', function() {
+                const isPassword = passwordInput.type === 'password';
+                passwordInput.type = isPassword ? 'text' : 'password';
+                eyeIcon.className = isPassword ? 'fas fa-eye-slash' : 'fas fa-eye';
+            });
+
+            toggleConfirmPassword.addEventListener('click', function() {
+                const isPassword = confirmPasswordInput.type === 'password';
+                confirmPasswordInput.type = isPassword ? 'text' : 'password';
+                eyeConfirmIcon.className = isPassword ? 'fas fa-eye-slash' : 'fas fa-eye';
+            });
+
+            // =====================================================
+            // PASSWORD STRENGTH
+            // =====================================================
+            function evaluatePasswordStrength(pwd) {
+                if (!pwd) return 0;
+                let score = 0;
+                if (pwd.length >= 6) score++;
+                if (pwd.length >= 10) score++;
+                if (/[A-Z]/.test(pwd) && /[a-z]/.test(pwd)) score++;
+                if (/\d/.test(pwd)) score++;
+                if (/[^A-Za-z0-9]/.test(pwd)) score++;
+                return Math.min(score, 4);
+            }
+
+            function updateStrengthUI(pwd) {
+                const strength = evaluatePasswordStrength(pwd);
+                const classes = ['weak', 'fair', 'good', 'strong'];
+                // reset
+                bars.forEach((bar, idx) => {
+                    bar.className = 'bar';
+                });
+                // fill up to strength
+                for (let i = 0; i < strength; i++) {
+                    bars[i].classList.add(classes[strength - 1] || 'weak');
+                }
+                // if strength 0 but password not empty -> show weak on first bar
+                if (pwd && strength === 0) {
+                    bars[0].classList.add('weak');
+                }
+            }
+
+            passwordInput.addEventListener('input', function() {
+                updateStrengthUI(this.value);
+            });
+
+            // =====================================================
+            // REDIRECT IF ALREADY LOGGED IN
+            // =====================================================
+            async function checkExistingSession() {
+                try {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    if (session) {
+                        showToast('Already signed in. Redirecting...', 1800);
+                        setTimeout(() => {
+                            window.location.href = 'dashboard.html';
+                        }, 1200);
+                        return true;
+                    }
+                } catch (err) {
+                    console.error('Session check error:', err);
+                }
+                return false;
+            }
+
+            // =====================================================
+            // REGISTER HANDLER
+            // =====================================================
+            async function handleRegister(e) {
+    e.preventDefault();
+    hideStatus();
+
+    const fullName = fullNameInput.value.trim();
+    const email = emailInput.value.trim();
+    const password = passwordInput.value.trim();
+    const confirmPassword = confirmPasswordInput.value.trim();
+
+    // Validation
+    if (!fullName || !email || !password || !confirmPassword) {
+        showStatus('⚠️ Please fill in all fields.', 'error');
+        return;
+    }
+
+    if (fullName.length < 2) {
+        showStatus('⚠️ Please enter your full name.', 'error');
+        return;
+    }
+
+    if (!email.includes('@') || !email.includes('.')) {
+        showStatus('⚠️ Please enter a valid email address.', 'error');
+        return;
+    }
+
+    if (password.length < 6) {
+        showStatus('⚠️ Password must be at least 6 characters.', 'error');
+        return;
+    }
+
+    if (password !== confirmPassword) {
+        showStatus('⚠️ Passwords do not match.', 'error');
+        return;
+    }
+
+    setLoading(true);
+
+    try {
+        // Check for duplicate email in profiles table first
+        const { data: existingEmail } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('email', email)
+            .maybeSingle();
+
+        if (existingEmail) {
+            showStatus('❌ This email is already registered. Try signing in.', 'error');
+            setLoading(false);
+            return;
+        }
+
+        // Check for duplicate full name (optional — informational)
+        const { data: existingName } = await supabase
+            .from('profiles')
+            .select('id')
+            .ilike('full_name', fullName)
+            .maybeSingle();
+
+        if (existingName) {
+            // Not blocking — just a warning toast
+            showToast('Note: A user with a similar name already exists.', 3000);
+        }
+
+        // Sign up (email confirmation is disabled in Supabase, so session returns immediately)
+        const { data, error } = await supabase.auth.signUp({
+            email: email,
+            password: password,
+            options: {
+                data: {
+                    full_name: fullName,
+                    display_name: fullName,
+                },
+                emailRedirectTo: null
+            }
+        });
+
+        if (error) {
+            if (error.message.includes('already registered')) {
+                showStatus('❌ This email is already registered. Try signing in.', 'error');
+            } else {
+                showStatus('❌ ' + error.message, 'error');
+            }
+            setLoading(false);
+            return;
+        }
+
+        // Ensure profile row is created
+        if (data?.user?.id) {
+            await supabase.from('profiles').upsert({
+                id: data.user.id,
+                full_name: fullName,
+                email: email
+            }, { onConflict: 'id' });
+        }
+
+        // If we got a session, go straight in
+        if (data?.session) {
+            showStatus('✅ Account created! Redirecting...', 'success');
+            showToast('Welcome to TaskFlow, ' + fullName + '! 🎉', 3000);
+            setTimeout(() => {
+                window.location.href = 'dashboard.html';
+            }, 1500);
+        } else {
+            showStatus('✅ Account created! You can now sign in.', 'success');
+            showToast('Account created successfully', 3000);
+            setLoading(false);
+            // Auto-redirect to login after a moment
+            setTimeout(() => {
+                window.location.href = 'login.html';
+            }, 2000);
+        }
+
+    } catch (err) {
+        console.error('Registration error:', err);
+        showStatus('❌ Network error. Please try again.', 'error');
+        setLoading(false);
+    }
+}
+            // =====================================================
+            // LINK HANDLERS
+            // =====================================================
+            loginLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                showToast('Redirecting to sign in...', 1500);
+                setTimeout(() => {
+                    window.location.href = 'login.html'; // your login page
+                }, 800);
+            });
+
+            termsLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                showToast('Terms of Service page (demo)', 2500);
+            });
+
+            privacyLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                showToast('Privacy Policy page (demo)', 2500);
+            });
+
+            // =====================================================
+            // KEYBOARD SHORTCUTS
+            // =====================================================
+            document.addEventListener('keydown', function(e) {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    document.getElementById('registerForm').dispatchEvent(new Event('submit'));
+                }
+                if (e.key === 'Escape') {
+                    hideStatus();
+                    document.activeElement?.blur();
+                }
+            });
+
+            // =====================================================
+            // FORM SUBMIT
+            // =====================================================
+            document.getElementById('registerForm').addEventListener('submit', handleRegister);
+
+            // =====================================================
+            // SESSION CHECK ON LOAD
+            // =====================================================
+            checkExistingSession();
+
+            // =====================================================
+            // FOCUS
+            // =====================================================
+            if (!localStorage.getItem('taskflow_remember')) {
+                fullNameInput.focus();
+            }
+
+            // =====================================================
+            // CONSOLE
+            // =====================================================
+            console.log('✅ TaskFlow Register Page Initialized');
+            console.log('🔌 Connected to Supabase:', SUPABASE_URL);
+
+        })();
+    </script>
+</body>
+</html>

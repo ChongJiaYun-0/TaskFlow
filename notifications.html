@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script>
+        // Apply saved theme IMMEDIATELY, before any CSS renders or the
+        // page paints. This must run synchronously and as early as
+        // possible - if it runs after DOMContentLoaded (as it did before,
+        // inside each page's init function), the browser paints the
+        // default light theme first, then flips to dark a moment later,
+        // producing a visible flash on every navigation.
+        (function() {
+            try {
+                var theme = localStorage.getItem('taskflow-theme');
+                if (theme) document.documentElement.setAttribute('data-theme', theme);
+            } catch (e) { /* localStorage unavailable - fall back to default theme */ }
+        })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="TaskFlow - Notifications">
+    <title>TaskFlow — Notifications</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">
+    </script>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        /* Notifications page - the only rule not already in styles.css */
+        /* ============================================
+   MARK READ BUTTON - Complete
+   ============================================ */
+.mark-read-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--primary);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 6px 14px;
+    border-radius: 6px;
+    transition: all var(--transition);
+    position: relative;
+    overflow: hidden;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    white-space: nowrap;
+    min-height: 32px;
+}
+
+/* Hover State - Smooth lift with color change */
+.mark-read-btn:hover {
+    background: var(--primary-soft);
+    border-color: var(--primary);
+    color: var(--primary);
+    transform: translateY(-1px) scale(1.02);
+    box-shadow: 0 4px 12px rgba(88, 101, 242, 0.15);
+}
+
+/* Active/Pressed State */
+.mark-read-btn:active {
+    transform: scale(0.95);
+    box-shadow: none;
+    transition-duration: 0.05s;
+}
+
+/* Focus State - Accessibility */
+.mark-read-btn:focus {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--primary-soft), 0 0 0 5px rgba(88, 101, 242, 0.1);
+}
+
+/* Disabled State */
+.mark-read-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+/* Dark Mode */
+[data-theme="dark"] .mark-read-btn:hover {
+    background: var(--primary-soft);
+    border-color: var(--primary);
+    color: var(--primary);
+    box-shadow: 0 4px 12px rgba(123, 134, 255, 0.2);
+}
+
+/* Success State - Already Read */
+.mark-read-btn.success {
+    background: var(--green-soft);
+    color: var(--green);
+    border-color: var(--green);
+    cursor: default;
+}
+
+.mark-read-btn.success:hover {
+    transform: none;
+    box-shadow: none;
+    background: var(--green-soft);
+    cursor: default;
+}
+
+/* Danger/Delete Variant */
+.mark-read-btn.danger {
+    color: var(--red);
+    border-color: var(--red-soft);
+}
+
+.mark-read-btn.danger:hover {
+    background: var(--red-soft);
+    border-color: var(--red);
+    color: var(--red);
+    box-shadow: 0 4px 12px rgba(228, 84, 84, 0.15);
+}
+
+/* ============================================================
+   MARK READ BUTTON — responsive
+   ============================================================ */
+
+.mark-read-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+
+    /* Icon + label */
+    padding: 5px 12px;
+    min-height: 30px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+
+    background: var(--surface);
+    color: var(--primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.18s ease;
+
+    /* Never stretch to fill the row */
+    flex-shrink: 0;
+    width: auto;
+    max-width: 100%;
+}
+
+.mark-read-btn:hover {
+    background: var(--primary-soft);
+    border-color: var(--primary);
+    color: var(--primary);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(88, 101, 242, 0.15);
+}
+
+.mark-read-btn:active {
+    transform: scale(0.96);
+    box-shadow: none;
+}
+
+.mark-read-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+[data-theme="dark"] .mark-read-btn:hover {
+    box-shadow: 0 3px 10px rgba(123, 134, 255, 0.2);
+}
+
+/* -------- Responsive scaling -------- */
+
+/* Tablet: slightly smaller */
+@media (max-width: 1024px) {
+    .mark-read-btn {
+        padding: 4px 10px;
+        font-size: 10.5px;
+        min-height: 28px;
+    }
+}
+
+/* Mobile: tiny, icon-forward, still inline */
+@media (max-width: 768px) {
+    .mark-read-btn {
+        padding: 4px 8px;
+        font-size: 10px;
+        min-height: 26px;
+        border-radius: 7px;
+        gap: 3px;
+    }
+
+    /* Nudge it to the top-right corner of the notification row */
+    .notification-item .mark-read-btn {
+        align-self: flex-start;
+        margin-top: 2px;
+    }
+}
+
+/* Very small mobile: icon-only, keep it compact */
+@media (max-width: 480px) {
+    .mark-read-btn {
+        padding: 4px;
+        width: 26px;
+        height: 26px;
+        min-height: 26px;
+        border-radius: 50%;
+        font-size: 0; /* hide text */
+        gap: 0;
+    }
+
+    /* Show an icon instead of text */
+    .mark-read-btn::before {
+        content: "\eb7b"; /* bx-check-double */
+        font-family: 'boxicons' !important;
+        font-size: 13px;
+        line-height: 1;
+        color: inherit;
+    }
+}
+    </style>
+</head>
+<body>
+    <div class="app-shell">
+        <!-- LEFT NAVIGATION -->
+        <div id="navbar-container"></div>
+
+        <!-- MAIN CONTENT -->
+        <main class="main">
+            <!-- TOPBAR -->
+            <div id="topbar-container"></div>
+
+            <!-- PAGE CONTENT -->
+            <section class="content" id="app">
+                <div id="pageContent">
+                    <div class="loading-spinner">
+                        <div class="spinner"></div>
+                        <span>Loading dashboard...</span>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- ============================================
+         SCRIPTS - Load in order
+         ============================================ -->
+    <!-- 1. Shared app logic -->
+    <script src="app.js"></script>
+    
+    <!-- 2. Task Modal (reusable) -->
+    <script src="taskModal.js"></script>
+    
+    <!-- 3. Dashboard logic -->
+    <script src="notifications.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof initNotifications === 'function') {
+                initNotifications();
+            } else {
+                console.error('initNotifications() not found - check that the latest app.js is loaded.');
+            }
+        });
+    </script>
+</body>
+</html>

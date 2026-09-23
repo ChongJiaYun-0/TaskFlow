@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TaskFlow - Login</title>
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Your existing styles.css -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="login-page">
+        <!-- ===== FLOATING SHAPES ===== -->
+        <div class="floating-shapes">
+            <div class="shape"></div>
+            <div class="shape"></div>
+            <div class="shape"></div>
+        </div>
+
+        <!-- ===== TOAST ===== -->
+        <div class="toast" id="toast"></div>
+
+        <!-- ===== LOGIN WRAPPER ===== -->
+        <div class="login-wrapper">
+            <div class="login-card">
+                
+                <!-- ===== LOGO ===== -->
+                <div class="login-logo">
+                    <div class="brand-mark">T</div>
+                    <h1>Task<span>Flow</span></h1>
+                    <p>Sign in to manage your tasks</p>
+                </div>
+
+                <!-- ===== STATUS MESSAGE ===== -->
+                <div class="auth-status" id="authStatus"></div>
+
+                <!-- ===== LOGIN FORM ===== -->
+                <form class="login-form" id="loginForm" autocomplete="off">
+                    <div class="form-Group">
+                        <label for="email">Email Address</label>
+                        <div class="input-wrapper">
+                            <i class="fas fa-envelope"></i>
+                            <input 
+                                type="email" 
+                                id="email" 
+                                placeholder="you@example.com" 
+                                required
+                                autocomplete="email"
+                            />
+                        </div>
+                    </div>
+
+                    <div class="form-Group">
+                        <label for="password">Password</label>
+                        <div class="input-wrapper">
+                            <i class="fas fa-lock"></i>
+                            <input 
+                                type="password" 
+                                id="password" 
+                                placeholder="Enter your password" 
+                                required
+                                autocomplete="current-password"
+                            />
+                            <button type="button" class="toggle-password" id="togglePassword" aria-label="Toggle password visibility">
+                                <i class="fas fa-eye" id="eyeIcon"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="loginBtn">
+                        <span id="loginText">Sign In</span>
+                        <i class="fas fa-arrow-right" id="loginIcon"></i>
+                    </button>
+                </form>
+                <!-- ===== FOOTER ===== -->
+                <div class="login-footer">
+                    Don't have an account? <a href="#" id="signupLink">Create one now</a>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- ===== JAVASCRIPT ===== -->
+    <!-- ===================================================== -->
+    
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2">
+    </script>
+    
+    <script>
+        (function() {
+            'use strict';
+
+            // =====================================================
+            // CONFIGURATION
+            // =====================================================
+            
+            const SUPABASE_URL = "https://vjtxicimwuovikifkwyb.supabase.co";
+            const SUPABASE_ANON_KEY = "sb_publishable_GKDi350FTcPpHWwXfMapTw_hk2-8qaH";
+
+            // =====================================================
+            // INITIALIZE SUPABASE
+            // =====================================================
+            
+            const supabase = window.supabase.createClient(
+                SUPABASE_URL, 
+                SUPABASE_ANON_KEY,
+                {
+                    auth: {
+                        persistSession: true,
+                        storageKey: 'supabase-auth',
+                        storage: window.localStorage,
+                        autoRefreshToken: true,
+                        detectSessionInUrl: true
+                    }
+                }
+            );
+
+            // =====================================================
+            // DOM REFERENCES
+            // =====================================================
+            
+            const emailInput = document.getElementById('email');
+            const passwordInput = document.getElementById('password');
+            const loginBtn = document.getElementById('loginBtn');
+            const loginText = document.getElementById('loginText');
+            const loginIcon = document.getElementById('loginIcon');
+            const authStatus = document.getElementById('authStatus');
+            const togglePassword = document.getElementById('togglePassword');
+            const eyeIcon = document.getElementById('eyeIcon');
+            const rememberMe = document.getElementById('rememberMe');
+            const toast = document.getElementById('toast');
+            const signupLink = document.getElementById('signupLink');
+
+            // =====================================================
+            // UTILITY FUNCTIONS
+            // =====================================================
+            
+            function showStatus(message, type = 'info') {
+                authStatus.textContent = message;
+                authStatus.className = 'auth-status show ' + type;
+            }
+
+            function hideStatus() {
+                authStatus.className = 'auth-status';
+            }
+
+            function showToast(message, duration = 3000) {
+                toast.textContent = message;
+                toast.classList.add('show');
+                clearTimeout(toast._timeout);
+                toast._timeout = setTimeout(() => {
+                    toast.classList.remove('show');
+                }, duration);
+            }
+
+            function setLoading(isLoading) {
+                if (isLoading) {
+                    loginBtn.disabled = true;
+                    loginText.innerHTML = '<span class="spinner"></span> Signing in...';
+                    loginIcon.style.display = 'none';
+                } else {
+                    loginBtn.disabled = false;
+                    loginText.textContent = 'Sign In';
+                    loginIcon.style.display = 'inline';
+                }
+            }
+
+            // =====================================================
+            // TOGGLE PASSWORD VISIBILITY
+            // =====================================================
+            
+            togglePassword.addEventListener('click', function() {
+                const isPassword = passwordInput.type === 'password';
+                passwordInput.type = isPassword ? 'text' : 'password';
+                eyeIcon.className = isPassword ? 'fas fa-eye-slash' : 'fas fa-eye';
+            });
+
+            // =====================================================
+            // CHECK IF USER IS ALREADY LOGGED IN
+            // =====================================================
+            
+            async function checkExistingSession() {
+                try {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    if (session) {
+                        showToast('Welcome back! Redirecting...', 2000);
+                        setTimeout(() => {
+                            window.location.href = 'dashboard.html';
+                        }, 1500);
+                        return true;
+                    }
+                } catch (err) {
+                    console.error('Session check error:', err);
+                }
+                return false;
+            }
+
+            // =====================================================
+            // LOGIN HANDLER
+            // =====================================================
+            
+           async function handleLogin(e) {
+    e.preventDefault();
+    hideStatus();
+
+    const email = emailInput.value.trim();
+    const password = passwordInput.value.trim();
+
+    // Validation
+    if (!email || !password) {
+        showStatus('⚠️ Please enter both email and password', 'error');
+        return;
+    }
+
+    if (!email.includes('@') || !email.includes('.')) {
+        showStatus('⚠️ Please enter a valid email address', 'error');
+        return;
+    }
+
+    if (password.length < 6) {
+        showStatus('⚠️ Password must be at least 6 characters', 'error');
+        return;
+    }
+
+    setLoading(true);
+
+    try {
+        const { data, error } = await supabase.auth.signInWithPassword({
+            email: email,
+            password: password,
+        });
+
+        if (error) {
+            // Handle duplicate email / invalid credentials
+            if (error.message.includes('Invalid login credentials')) {
+                showStatus('❌ Invalid email or password. Please try again.', 'error');
+            } else if (error.message.includes('Email not confirmed')) {
+                // Directly proceed — we're removing confirmation requirement
+                showStatus('✅ Signing in...', 'success');
+                setTimeout(() => {
+                    window.location.href = 'dashboard.html';
+                }, 1200);
+                return;
+            } else {
+                showStatus('❌ ' + error.message, 'error');
+            }
+            setLoading(false);
+            return;
+        }
+
+        // Success
+        showStatus('✅ Login successful! Redirecting...', 'success');
+        showToast('Welcome back, ' + (data.user?.email || 'User') + '! 🎉', 3000);
+
+        setTimeout(() => {
+            window.location.href = 'dashboard.html';
+        }, 1500);
+
+    } catch (err) {
+        console.error('Login error:', err);
+        showStatus('❌ Network error. Please try again.', 'error');
+        setLoading(false);
+    }
+}
+            // =====================================================
+            // SIGNUP LINK HANDLER
+            // =====================================================
+            
+            signupLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                showToast('Redirecting to sign up...', 2000);
+                setTimeout(() => {
+                    window.location.href = 'register.html';
+                }, 1000);
+            });
+
+            // =====================================================
+            // KEYBOARD SHORTCUTS
+            // =====================================================
+            
+            document.addEventListener('keydown', function(e) {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    document.getElementById('loginForm').dispatchEvent(new Event('submit'));
+                }
+
+                if (e.key === 'Escape') {
+                    hideStatus();
+                    document.activeElement?.blur();
+                }
+            });
+
+            // =====================================================
+            // FORM SUBMISSION
+            // =====================================================
+            
+            document.getElementById('loginForm').addEventListener('submit', handleLogin);
+
+            // =====================================================
+            // AUTO-FILL REMEMBER ME
+            // =====================================================
+            
+            if (localStorage.getItem('taskflow_remember') === 'true') {
+                rememberMe.checked = true;
+            }
+
+            // =====================================================
+            // CHECK SESSION ON LOAD
+            // =====================================================
+            
+            checkExistingSession();
+
+            // =====================================================
+            // FOCUS MANAGEMENT
+            // =====================================================
+            
+            if (!localStorage.getItem('taskflow_remember')) {
+                emailInput.focus();
+            }
+
+            // =====================================================
+            // CONSOLE LOG
+            // =====================================================
+            
+            console.log('✅ TaskFlow Login Page Initialized');
+            console.log('🔌 Connected to Supabase:', SUPABASE_URL);
+            console.log('📝 Press Ctrl+Enter to submit');
+
+            // =====================================================
+            // DEMO CREDENTIALS
+            // =====================================================
+            
+            console.log('🔑 Demo Accounts:');
+            console.log('  jia.yun@taskflow.com / password123');
+            console.log('  sarah.lim@taskflow.com / password123');
+            console.log('  alex.tan@taskflow.com / password123');
+            console.log('  daniel.wong@taskflow.com / password123');
+            console.log('  mei.lin@taskflow.com / password123');
+
+        })();
+    </script>
+
+</body>
+</html>
