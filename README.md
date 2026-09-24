@@ -2,7 +2,7 @@
 
 > A modern task and project management web application built with **HTML, CSS, JavaScript, and Supabase**.
 
-TaskFlow helps users manage personal tasks, group projects, schedules, notifications, and project progress from one responsive workspace.
+TaskFlow helps users manage personal tasks, collaborate on group projects, organize subtasks, track progress, and receive notifications from one responsive workspace.
 
 ---
 
@@ -17,44 +17,242 @@ TaskFlow helps users manage personal tasks, group projects, schedules, notificat
 * Project progress
 * Calendar overview
 
-### ✅ Task Management
+---
 
-* Create, edit, and delete tasks
-* Complete and cancel tasks
-* Search, filter, and sort
-* Task priorities
-* Due dates and descriptions
-* List and card views
+## 👤 Personal Features
 
-### 👥 Group Projects
+TaskFlow allows users to manage their own personal tasks independently.
 
-* Create and manage projects
-* Project members
-* Project tasks
-* Subtasks
-* Comments
-* Task attachments
-* Project progress
-* Project timeline
+* Create, edit, and delete personal tasks
+* Set task priority and due dates
+* Add task descriptions
+* Update task status
+* Mark tasks as completed
+* Cancel tasks
+* Search, filter, and sort tasks
+* View tasks in List or Card mode
+* View tasks through the calendar
+* Receive notifications for task-related activities
 
-### 📅 Calendar
+Personal tasks are separate from group projects and are managed by the individual user.
+
+---
+
+## 👥 Group Project Features
+
+TaskFlow uses a three-level structure for group collaboration:
+
+```text
+Project
+   │
+   ├── Task 1
+   │      ├── Subtask 1
+   │      ├── Subtask 2
+   │      └── Subtask 3
+   │
+   ├── Task 2
+   │      ├── Subtask 1
+   │      └── Subtask 2
+   │
+   └── Task 3
+          └── Subtask 1
+```
+
+### 📁 Project
+
+A **Project** represents the main piece of work being completed by a group.
+
+For example:
+
+```text
+Project: Website Development
+```
+
+A project can contain multiple tasks.
+
+The person who creates the project becomes the **Project Leader**.
+
+#### Project Leader Permissions
+
+The Project Leader can:
+
+* Add members to the project
+* Manage project members
+* Set the project status
+* Monitor overall project progress
+* Create and manage project tasks
+
+Only the **Project Leader** can add members and change the project status.
+
+---
+
+### ✅ Task
+
+A **Task** represents a specific piece of work inside a project.
+
+For example:
+
+```text
+Project: Website Development
+
+Task:
+Create Login Page
+```
+
+A project can contain many tasks.
+
+The person who creates a task becomes the **Task Assignor**.
+
+#### Task Assignor
+
+The Task Assignor can:
+
+* Create the task
+* Assign the task to a project member
+* Assign the task to themselves
+* Edit the task
+* Delete the task
+
+A task can only be assigned to:
+
+* A member of the project
+* The person who created the task
+
+This prevents tasks from being assigned to users outside the project.
+
+---
+
+### 👤 Task Group Leader & Members
+
+Each task can have people responsible for completing it.
+
+The **Task Group Leader** and assigned **Task Members** can:
+
+* Mark the task as completed
+* Mark subtasks as completed
+* View task progress
+* Work on assigned subtasks
+* Add comments
+* Add attachments
+
+This allows multiple project members to collaborate on the same task.
+
+---
+
+### 📝 Subtasks
+
+A **Subtask** represents smaller steps or details required to complete a task.
+
+For example:
+
+```text
+Task: Create Login Page
+
+Subtasks:
+├── Design login interface
+├── Create login form
+├── Connect Supabase Authentication
+├── Test login validation
+└── Test logout functionality
+```
+
+Subtasks help the team break a large task into smaller steps so that important details are less likely to be missed.
+
+All project members can:
+
+* Add subtasks
+* Edit subtasks
+* Mark subtasks as completed
+* Add attachments
+* Follow the progress of subtasks
+
+---
+
+### 💬 Comments
+
+Project members can communicate directly inside tasks.
+
+Members can:
+
+* Add comments
+* Edit comments
+* Discuss task progress
+* Provide updates or additional information
+* Attach files when necessary
+
+Comments help keep task-related communication together with the relevant task.
+
+---
+
+### 📎 Attachments
+
+Attachments can be added to tasks, subtasks, and comments.
+
+Subtask attachments can also be used to keep track of different versions of files.
+
+For example:
+
+```text
+Subtask: Design Homepage
+
+Attachments:
+├── homepage-v1.pdf
+├── homepage-v2.pdf
+└── homepage-final.pdf
+```
+
+This makes it easier for team members to follow file changes and identify the latest version.
+
+Files are stored in **Supabase Storage**, while attachment information is stored in the `task_attachments` table.
+
+---
+
+### 🗑 Task Deletion
+
+When a task is deleted:
+
+```text
+Task
+ ├── Subtask 1
+ ├── Subtask 2
+ ├── Subtask 3
+ └── Attachments
+```
+
+The related subtasks are also deleted.
+
+Attachments associated with the deleted task or its subtasks cannot be recovered through TaskFlow.
+
+> ⚠️ Users should make sure important files are backed up before deleting a task.
+
+---
+
+## 📅 Calendar
 
 * Day view
 * Week view
 * Month view
 * Year view
 * Task scheduling
+* Task due dates
 
-### 🔔 Notifications
+---
+
+## 🔔 Notifications
+
+TaskFlow provides notifications for:
 
 * Task assignments
 * Task updates
 * Comments
 * Upcoming deadlines
 * Project activities
+* Completed tasks
 * Read/unread status
 
-### 🔐 Authentication
+---
+
+## 🔐 Authentication
 
 * User registration
 * Login/logout
@@ -62,7 +260,9 @@ TaskFlow helps users manage personal tasks, group projects, schedules, notificat
 * Protected pages
 * Supabase Authentication
 
-### 🎨 UI
+---
+
+## 🎨 UI
 
 * Responsive design
 * Light and dark themes
@@ -97,7 +297,7 @@ TaskFlow helps users manage personal tasks, group projects, schedules, notificat
 ```text
 TaskFlow/
 │
-├── login.html
+├── index.html
 ├── login.html
 ├── register.html
 ├── dashboard.html
@@ -194,11 +394,14 @@ TaskFlow also uses **Supabase Storage** for uploaded files.
 Supabase
 │
 ├── PostgreSQL
-│   ├── tasks
+│   ├── profiles
 │   ├── projects
+│   ├── project_members
+│   ├── tasks
 │   ├── subtasks
 │   ├── comments
-│   └── ...
+│   ├── notifications
+│   └── task_attachments
 │
 └── Storage
     └── task-attachments
@@ -216,7 +419,7 @@ For local development, use a local HTTP server.
 
 ### VS Code
 
-Use the **Live Server** extension and open `login.html`.
+Use the **Live Server** extension and open `index.html`.
 
 ### Python
 
@@ -262,9 +465,7 @@ https://your-project.vercel.app
 
 ## 🔗 Vercel + Supabase
 
-Vercel and Supabase work together directly.
-
-The architecture is:
+Vercel hosts the TaskFlow frontend, while Supabase provides the backend services.
 
 ```text
                     ┌──────────────────┐
@@ -274,7 +475,7 @@ The architecture is:
                              ▼
                     ┌──────────────────┐
                     │      Vercel      │
-                    │  TaskFlow Frontend│
+                    │ TaskFlow Frontend│
                     └────────┬─────────┘
                              │
                   Supabase JavaScript API
@@ -289,22 +490,22 @@ The architecture is:
                     └──────────────────┘
 ```
 
-Therefore:
+This allows TaskFlow to:
 
-* Tasks created on Vercel can be stored in Supabase.
-* Task updates are saved to Supabase.
-* User accounts are handled by Supabase Authentication.
-* Comments and subtasks are stored in PostgreSQL.
-* Attachments are stored in Supabase Storage.
-* Data remains available when users access the application from different devices.
+* Store tasks and projects in Supabase
+* Synchronize application data through Supabase
+* Manage user accounts with Supabase Authentication
+* Store comments and subtasks in PostgreSQL
+* Store uploaded files in Supabase Storage
+* Access the same data across different devices
 
-You **do not need a separate backend server just to connect Vercel to Supabase**.
+A separate backend server is not required for the current architecture.
 
 ---
 
 ## 🔐 Production Configuration
 
-Before deploying, configure your Supabase Authentication settings to include your Vercel production URL.
+Before deploying TaskFlow, configure Supabase Authentication with the Vercel production URL.
 
 For example:
 
@@ -313,15 +514,29 @@ Site URL:
 https://your-project.vercel.app
 ```
 
-Also configure any required redirect URLs for authentication.
+Also configure any required authentication redirect URLs.
 
-Make sure your Supabase database has the required tables and RLS policies before allowing users to access production data.
+Make sure:
+
+* Required database tables exist
+* RLS policies are enabled
+* Storage policies are configured
+* The `task-attachments` bucket exists
+* Authentication redirects use the correct production URL
+
+---
+
+## ⚠️ Known Limitation
+
+Because TaskFlow connects directly to Supabase, some pages may occasionally take a moment to load while the application establishes the connection and retrieves data.
+
+In some situations, the application may require a page refresh before all Supabase data is displayed correctly.
+
+This is a known limitation of the current implementation and may be improved in a future version through better loading states, connection handling, and error recovery.
 
 ---
 
 ## 🧪 Pre-Deployment Checklist
-
-Before publishing TaskFlow, verify:
 
 ### Authentication
 
@@ -331,7 +546,7 @@ Before publishing TaskFlow, verify:
 * [ ] Session persists
 * [ ] Protected pages redirect correctly
 
-### Tasks
+### Personal Tasks
 
 * [ ] Create task
 * [ ] Edit task
@@ -342,12 +557,15 @@ Before publishing TaskFlow, verify:
 ### Group Projects
 
 * [ ] Create project
-* [ ] Add members
+* [ ] Add project members
 * [ ] Create tasks
+* [ ] Assign tasks
 * [ ] Create subtasks
+* [ ] Mark tasks/subtasks as completed
 * [ ] Add comments
 * [ ] Upload attachments
 * [ ] View project progress
+* [ ] Delete tasks and related subtasks
 
 ### Production
 
@@ -364,12 +582,13 @@ Before publishing TaskFlow, verify:
 
 Potential future features:
 
+* Microsoft Teams integration
 * Google Calendar integration
 * Email verification
 * Email notifications
 * Push notifications
 * Recurring tasks
-* Real-time collaboration
+* Real-time collaboration improvements
 * Drag-and-drop task management
 * Advanced project analytics
 * Role-based permissions
@@ -399,5 +618,3 @@ Built with:
 ```text
 HTML • CSS • JavaScript • Supabase • PostgreSQL • Vercel
 ```
-
-account to login

@@ -214,12 +214,16 @@ function ensureTaskModal() {
 
 // Opens the ADD / EDIT modal and fills it in appropriately according to the types (PERSONAL / Group)
 // opts: { mode: 'add'|'edit', taskType: 'personal'|'Group', task: obj|null, projectId: id|null }
-window.openTaskModal = async function(opts) {
-    // Make sure the modal's HTML exists in the page before we try to use it.
-    ensureTaskModal();
-
-    // Pull the individual options out of the opts object for convenience.
-    const { mode, taskType, task, projectId } = opts;
+window.openTaskModal = async function(opts = {}) {
+    try {
+        ensureTaskModal();
+        const { mode, taskType, task, projectId } = opts;
+        window._taskModalContext = {
+            projectId: projectId || null,
+            taskType,
+            mode,
+            assigneeId: task?.assignee_id || null
+        };
     const isGroup = taskType === 'Group';
 
         const form = document.getElementById('taskForm');
@@ -238,33 +242,62 @@ window.openTaskModal = async function(opts) {
     if (isGroup) {
         const projectSelect = document.getElementById('tfProject');
         const assigneeSelect = document.getElementById('tfAssignee');
-        // Which project should be pre-selected: the task's existing
-        // project (editing) or the projectId passed in (adding from
-        // inside a specific project's workspace).
-        const targetProjectId = (task && task.project_id) || projectId;
+        const projectRow    = document.getElementById('tfProjectRow');
+        const assigneeRow   = document.getElementById('tfAssigneeRow');
 
-        // Build the <option> list for every project the user has access
-        // to, marking the target one as "selected".
-        projectSelect.innerHTML = (window.projects || [])
-            .map(p => `<option value="${p.id}" ${String(p.id) === String(targetProjectId) ? 'selected' : ''}>${window.escapeHtml(p.name)}</option>`)
-            .join('');
+        const hasKnownProject = !!projectId;
 
-        // Small helper: (re)loads the members of whichever project is
-        // currently selected, and rebuilds the Assignee dropdown from them.
-        const refillAssignees = async () => {
-            const members = await window.loadProjectMembers(projectSelect.value);
-            assigneeSelect.innerHTML = members.length > 0
-                // Normal case: list every member, pre-selecting the task's
-                // current assignee (if editing).
-                ? members.map(m => `<option value="${m.id}" ${task && task.assignee_id === m.id ? 'selected' : ''}>${window.escapeHtml(m.full_name)}</option>`).join('')
-                // Fallback: no members found for this project -> just
-                // offer the current logged-in user so the form isn't empty.
-                : `<option value="${window.currentUser.id}">${window.escapeHtml((window.userProfile && window.userProfile.full_name) || 'Me')}</option>`;
-        };
-        await refillAssignees(); // run once immediately for the pre-selected project
-        // If the user changes the Project dropdown, refresh the Assignee
-        // list to match members of the newly chosen project.
-        projectSelect.onchange = refillAssignees;
+        if (hasKnownProject && mode !== 'edit') {
+            projectRow.classList.add('hidden');
+            assigneeRow.classList.add('hidden');
+        } else {
+            projectRow.classList.remove('hidden');
+            assigneeRow.classList.remove('hidden');
+
+            const targetProjectId = (task && task.project_id) || projectId;
+
+            const projectList = Array.isArray(window.projects) ? window.projects : [];
+
+            if (projectList.length === 0) {
+                // No projects at all → show a helpful message instead of a broken dropdown
+                projectSelect.innerHTML = `<option value="">— No projects available —</option>`;
+                assigneeSelect.innerHTML = `<option value="">—</option>`;
+            } else {
+                projectSelect.innerHTML = projectList
+                    .filter(p => p && p.id)
+                    .map(p => `<option value="${p.id}" ${
+                        String(p.id) === String(targetProjectId) ? 'selected' : ''
+                    }>${window.escapeHtml(p.name || 'Untitled project')}</option>`)
+                    .join('');
+
+                const refillAssignees = async () => {
+                    try {
+                        const members = await window.loadProjectMembers(projectSelect.value);
+                        if (members && members.length > 0) {
+                            assigneeSelect.innerHTML = members
+                                .map(m => `<option value="${m.id}" ${
+                                    task && task.assignee_id === m.id ? 'selected' : ''
+                                }>${window.escapeHtml(m.full_name || 'Unnamed')}</option>`)
+                                .join('');
+                        } else {
+                            const fallbackName =
+                                (window.userProfile && window.userProfile.full_name) || 'Me';
+                            assigneeSelect.innerHTML =
+                                `<option value="${window.currentUser.id}">${window.escapeHtml(fallbackName)}</option>`;
+                        }
+                    } catch (err) {
+                        console.error('refillAssignees failed:', err);
+                        const fallbackName =
+                            (window.userProfile && window.userProfile.full_name) || 'Me';
+                        assigneeSelect.innerHTML =
+                            `<option value="${window.currentUser?.id || ''}">${window.escapeHtml(fallbackName)}</option>`;
+                    }
+                };
+
+                await refillAssignees();
+                projectSelect.onchange = refillAssignees;
+            }
+        }
     }
 
     // Set the modal's header text based on whether we're adding or
@@ -297,6 +330,10 @@ window.openTaskModal = async function(opts) {
     document.getElementById('taskModal').classList.add('show');
     // Put the cursor straight into the Title field for convenience.
     document.getElementById('tfTitle').focus();
+        } catch (err) {
+        console.error('openTaskModal failed:', err);
+        window.showToast('Could not open the task form', 'error');
+    }
 };
 
 // Hides the modal (reverses the classList.add('show') calls above).
@@ -324,8 +361,12 @@ async function submitTaskModal(e) {
     const editingId = document.getElementById('tfId').value;    // set if editing, "" if adding
     const isGroup = taskType === 'Group';
 
-    // Group tasks must have someone assigned - block submission if not.
-    if (isGroup && !document.getElementById('tfAssignee').value) {
+    // Group tasks with a known project auto-assign to the current user,
+    // so only require an explicit assignee when the field is visible.
+    const assigneeField = document.getElementById('tfAssignee');
+    const assigneeVisible = assigneeField && assigneeField.offsetParent !== null;
+
+    if (isGroup && assigneeVisible && !assigneeField.value) {
         errorEl.textContent = 'Please choose who this task is assigned to.';
         return;
     }
@@ -342,10 +383,19 @@ async function submitTaskModal(e) {
         reminder: document.getElementById('tfReminder').value
     };
 
-    // Only Group tasks carry a project + assignee.
     if (isGroup) {
-        payload.project_id = document.getElementById('tfProject').value;
-        payload.assignee_id = document.getElementById('tfAssignee').value;
+        const projectField = document.getElementById('tfProject');
+        const projectRow = document.getElementById('tfProjectRow');
+
+        // If the dropdowns are hidden, use the values passed into openTaskModal.
+        payload.project_id = (projectRow && !projectRow.classList.contains('hidden'))
+            ? projectField.value
+            : (window._taskModalContext?.projectId || payload.project_id);
+
+        // Fallback chain: visible dropdown → stored context → current user
+        payload.assignee_id = (assigneeField && assigneeVisible)
+            ? assigneeField.value
+            : (window._taskModalContext?.assigneeId || window.currentUser.id);
     }
 
     // Disable the submit button and show a "Saving..." state so the
@@ -370,7 +420,10 @@ async function submitTaskModal(e) {
             payload.created_by = window.currentUser.id;
             // Personal tasks are always assigned to yourself; Group tasks
             // already got their assignee_id set above from the dropdown.
-            if (!isGroup) payload.assignee_id = window.currentUser.id;
+            // if (!isGroup) payload.assignee_id = window.currentUser.id;
+            if (isGroup && !payload.assignee_id) {
+                payload.assignee_id = window.currentUser.id;
+            }
 
             // INSERT: create a brand-new row in the "tasks" table.
             const { error } = await supabase.from('tasks').insert(payload);

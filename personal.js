@@ -57,6 +57,21 @@ function getPersonalEffectiveStatus(task) {
     return 'pending';
 }
 
+// personalTask.js
+function setDueDateMin() {
+  const dueDateInput = document.getElementById('tfDueDate');
+  if (!dueDateInput) return;
+
+  const today = new Date();
+  // adjust for local timezone
+  const tzOffset = today.getTimezoneOffset() * 60000;
+  const localISODate = new Date(today - tzOffset).toISOString().split('T')[0];
+
+  dueDateInput.min = localISODate;
+}
+
+document.addEventListener('DOMContentLoaded', setDueDateMin);
+
 async function autoPromotePersonalTasks() {
     const today = new Date().toISOString().slice(0, 10);
 

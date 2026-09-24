@@ -433,18 +433,18 @@ window.loadNavbar = function(activePage) {
                         <span class="bottom-nav-label">Personal</span>
                     </button>
                 </li>
-                <li>
-                    <button class="bottom-nav-item ${activePage === 'group' ? 'active' : ''}" data-page="group" data-href="group.html">
-                        <i class="bx bx-group bottom-nav-icon"></i>
-                        <span class="bottom-nav-label">Group</span>
-                    </button>
-                </li>
-                <li>
-                    <button class="bottom-nav-item" id="bottomProfile" data-href="profile.html">
-                        <span class="avatar-sm" id="bottomAvatar">U</span>
-                        <span class="bottom-nav-label">Profile</span>
-                    </button>
-                </li>
+                    <li>
+                        <button class="bottom-nav-item ${activePage === 'group' ? 'active' : ''}" data-page="group" data-href="group.html">
+                            <i class="bx bx-group bottom-nav-icon"></i>
+                            <span class="bottom-nav-label">Group</span>
+                        </button>
+                    </li>
+                    <li>
+                        <button class="bottom-nav-item ${activePage === 'profile' ? 'active' : ''}" id="bottomProfile" data-href="profile.html" data-page="profile">
+                            <span class="avatar-sm" id="bottomAvatar">U</span>
+                            <span class="bottom-nav-label">Profile</span>
+                        </button>
+                    </li>
                 <li>
                     <button class="bottom-nav-item" id="bottomLogout">
                         <i class="bx bx-log-out bottom-nav-icon"></i>

@@ -10,7 +10,7 @@ window._GroupState = {
     search: '',
     status: '',
     priority: '',
-    sort: 'due_asc',   // <-- ADD THIS
+    sort: 'due_asc',
     subtasksByTask: {},
     commentTaskId: null,
     subtaskDetailId: null,
@@ -31,8 +31,10 @@ window.initGroup = async function () {
         await window.loadProjects();
         await window.loadTasks();
         await loadAllGroupProjectTasks();
+        await loadAllProfilesCache();  
+
         const savedTheme = localStorage.getItem('taskflow-theme');
-if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+        if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
 
         await autoPromoteStartedTasks();
 
@@ -71,8 +73,10 @@ async function loadAllGroupProjectTasks() {
     const projectIds = (window.projects || []).map(p => p.id).filter(Boolean);
     if (projectIds.length === 0) {
         window.GroupTasks = [];
+        window._projectLeaders = {};
         return;
     }
+
     const { data: tasks, error } = await supabase
         .from('tasks')
         .select('*')
@@ -80,6 +84,56 @@ async function loadAllGroupProjectTasks() {
         .order('due_date', { ascending: true, nullsFirst: false });
     if (error) throw error;
     window.GroupTasks = tasks || [];
+
+    // 👇 NEW: resolve each project's leader name
+    await loadProjectLeaders(projectIds);
+}
+
+async function loadAllProfilesCache() {
+    try {
+        const { data, error } = await supabase
+            .from('profiles')
+            .select('id, full_name, email')
+            .limit(500);
+        if (error) throw error;
+        window._allProfiles = {};
+        (data || []).forEach(p => { window._allProfiles[String(p.id)] = p; });
+    } catch (err) {
+        console.error('Failed to load profile cache:', err);
+        window._allProfiles = {};
+    }
+}
+
+async function loadProjectLeaders(projectIds) {
+    window._projectLeaders = window._projectLeaders || {};
+
+    // Collect unique leader user IDs from the projects we already have
+    const leaderIds = new Set();
+    (window.projects || []).forEach(p => {
+        const id = p.created_by || p.owner_id;
+        if (id) leaderIds.add(String(id));
+    });
+
+    const ids = Array.from(leaderIds);
+    if (ids.length === 0) return;
+
+    try {
+        const { data: profiles, error } = await supabase
+            .from('profiles')
+            .select('id, full_name, email')
+            .in('id', ids);
+        if (error) throw error;
+
+        const byId = {};
+        (profiles || []).forEach(prof => { byId[String(prof.id)] = prof; });
+
+        (window.projects || []).forEach(p => {
+            const leaderId = String(p.created_by || p.owner_id || '');
+            window._projectLeaders[p.id] = byId[leaderId] || null;
+        });
+    } catch (err) {
+        console.error('Failed to load project leaders:', err);
+    }
 }
 
 async function autoPromoteStartedTasks() {
@@ -107,17 +161,25 @@ function isProjectLeader(projectOrId) {
         ? projectOrId
         : (window.projects || []).find(p => String(p.id) === String(projectOrId));
     if (!project) return false;
-    const leaderId = project.owner_id || project.created_by;
+    const leaderId = project.created_by;
     return String(leaderId) === String(window.currentUser?.id);
 }
 
 function getEffectiveStatus(task) {
     if (!task) return 'pending';
     if (task.status === 'completed') return 'completed';
+
     if (task.due_date) {
-        const today = new Date().toISOString().slice(0, 10);
-        if (task.due_date < today) return 'overdue';
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const due = new Date(task.due_date + 'T00:00:00');
+        if (!Number.isNaN(due.getTime())) {
+            // Due today or earlier (and not completed) → overdue
+            if (due <= today) return 'overdue';
+        }
     }
+
     if (task.status === 'in-progress') return 'in-progress';
     return 'pending';
 }
@@ -137,14 +199,6 @@ function sortTasksForCardView(tasks) {
     });
 }
 
-/**
- * NEW (#6) — Returns a friendly "X days left" / "X days overdue" string
- * for a given due_date. Returns '' if no date.
- */
-/**
- * Renders a countdown chip below the due date.
- * Also indicates overdue explicitly.
- */
 function renderCountdown(dueDate) {
     if (!dueDate) return '';
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -220,44 +274,56 @@ function parseLegacyAttachments(value) {
     return [];
 }
 
-/**
- * Renders an assignee cell, emphasizing the current user with a "You" badge.
- */
 function renderAssignee(members, userId) {
     if (!userId) return '<span style="color:var(--muted)">Unassigned</span>';
-    const m = memberById(members, userId);
-    if (!m) return 'Team member';
+
+    // 1. Try the passed-in member list
+    let m = memberById(members, userId);
+
+    // 2. Fall back to the current user's own profile
+    if (!m && String(userId) === String(window.currentUser?.id) && window.userProfile) {
+        m = window.userProfile;
+    }
+
+    // 3. Fall back to the project-leader cache (already loaded)
+    if (!m && window._projectLeaders) {
+        m = Object.values(window._projectLeaders).find(
+            p => p && String(p.id) === String(userId)
+        ) || null;
+    }
+
+    if (!m) {
+        // Last resort — show a short ID fragment so it's not a lie
+        return `<span style="color:var(--muted)" title="User ${window.escapeHtml(String(userId))}">Team member</span>`;
+    }
+
+        // 4. Fall back to the global profile cache
+    if (!m && window._allProfiles) {
+        m = window._allProfiles[String(userId)] || null;
+    }
 
     const isMe = String(userId) === String(window.currentUser?.id);
     if (isMe) {
         return `<span class="assignee-me"><i class="bx bx-user-check"></i>You</span>`;
     }
-    return window.escapeHtml(m.full_name);
+    return window.escapeHtml(m.full_name || 'Team member');
 }
-
 
 function memberById(members, userId) {
     if (!userId) return null;
+    if (!Array.isArray(members)) return null;
     return members.find(mm => String(mm.id) === String(userId)) || null;
 }
 
-/**
- * NEW (#7) — Renders a colored avatar initial for a userId.
- */
 function userInitialBadge(members, userId) {
     const m = memberById(members, userId);
     const name = m?.full_name || 'Team member';
     const initial = name.charAt(0).toUpperCase();
-    // Deterministic color from user id
     const colors = ['#5865f2', '#20a66a', '#d99118', '#e45454', '#3b82f6'];
     const idx = Math.abs(String(userId || 'x').split('').reduce((a, c) => a + c.charCodeAt(0), 0)) % colors.length;
     return `<span class="avatar-initial" style="background:${colors[idx]}" title="${window.escapeHtml(name)}">${initial}</span>`;
 }
 
-
-/**
- * Sort state for the group task list. Default: due date ascending.
- */
 function getGroupSortState() {
     if (!window._GroupState.sort) {
         window._GroupState.sort = 'due_asc';
@@ -277,14 +343,9 @@ function toggleGroupSort(sortKey) {
     const activeKey = active.replace(/_(asc|desc)$/, '');
     const nextDir = activeKey === sortKey && active.endsWith('_asc') ? 'desc' : 'asc';
     window._GroupState.sort = `${sortKey}_${nextDir}`;
-
-    // Re-render only the workspace (keeping the projectId)
     renderProjectWorkspace(window._GroupState.activeProject);
 }
 
-/**
- * Applies the current sort state to a task list.
- */
 function applyGroupSort(tasks) {
     const active = getGroupSortState();
     const sortKey = active.replace(/_(asc|desc)$/, '');
@@ -355,14 +416,33 @@ async function loadGroupComments(taskIds) {
     window._GroupState.comments = grouped;
 }
 
-async function loadGroupAttachments(taskIds) {
-    if (!taskIds?.length) { window._GroupState.attachments = {}; return; }
+/**
+ * Loads task-level, subtask-level, comment-level, AND project-level
+ * attachments.
+ *
+ * Task/subtask attachments are grouped by their parent id.
+ * Comment attachments are merged into the matching comment objects.
+ * Project-level attachments are stored under a `__project__<id>` key
+ * so `renderFinalDeliverables` can pick them up.
+ */
+async function loadGroupAttachments(taskIds, projectId = null) {
+    if (!taskIds?.length && !projectId) {
+        window._GroupState.attachments = {};
+        return;
+    }
+
     window._GroupState.loadingAttachments = true;
     try {
-        const { data: taskFiles } = await supabase
-            .from('task_attachments').select('*').in('task_id', taskIds)
-            .order('created_at', { ascending: true });
+        // --- 1. Task-level attachments ---
+        let taskFiles = [];
+        if (taskIds?.length) {
+            const { data } = await supabase
+                .from('task_attachments').select('*').in('task_id', taskIds)
+                .order('created_at', { ascending: true });
+            taskFiles = data || [];
+        }
 
+        // --- 2. Subtask-level attachments ---
         const subtaskIds = Object.values(window._GroupState.subtasksByTask || {})
             .flat().map(s => s.id).filter(Boolean);
         let subtaskFiles = [];
@@ -374,6 +454,7 @@ async function loadGroupAttachments(taskIds) {
             subtaskFiles = data || [];
         }
 
+        // --- 3. Comment-level attachments ---
         const commentIds = Object.values(window._GroupState.comments || {})
             .flat().map(c => c.id).filter(Boolean);
         let commentFiles = [];
@@ -384,6 +465,17 @@ async function loadGroupAttachments(taskIds) {
             commentFiles = data || [];
         }
 
+        // --- 4. Project-level attachments ---
+        let projectFiles = [];
+        if (projectId) {
+            const { data } = await supabase
+                .from('task_attachments').select('*')
+                .eq('project_id', projectId)
+                .order('created_at', { ascending: true });
+            projectFiles = data || [];
+        }
+
+        // --- Group task + subtask attachments by parent id ---
         const grouped = {};
         [...(taskFiles || []), ...subtaskFiles].forEach(file => {
             const parentId = file.task_id || file.subtask_id;
@@ -391,8 +483,15 @@ async function loadGroupAttachments(taskIds) {
             if (!grouped[parentId]) grouped[parentId] = [];
             grouped[parentId].push(file);
         });
+
+        // Store project-level files under a special key
+        if (projectId) {
+            grouped[`__project__${projectId}`] = projectFiles;
+        }
+
         window._GroupState.attachments = grouped;
 
+        // --- Merge comment attachments into comments themselves ---
         if (commentFiles.length) {
             Object.keys(window._GroupState.comments).forEach(taskId => {
                 window._GroupState.comments[taskId] = window._GroupState.comments[taskId].map(comment => ({
@@ -432,8 +531,11 @@ function renderGroupRoot() {
                 <p>Collaborative projects you own or are a member of.</p>
             </div>
             <div class="page-actions">
+                <button type="button" class="btn secondary" id="createProjectBtn">
+                    <i class="bx bx-folder-plus"></i> <span class="btn-text">New Project</span>
+                </button>
                 <button type="button" class="btn primary" id="addGroupTaskFromProjects">
-                    <i class="bx bx-plus"></i> <span class="btn-text">Add New Group Task</span>
+                    <i class="bx bx-plus"></i> <span class="btn-text">Add Task</span>
                 </button>
             </div>
         </div>
@@ -454,16 +556,42 @@ function renderGroupRoot() {
         ${expandedId ? `<div id="groupWorkspaceMount" class="group-workspace-mount"></div>` : ''}
     `;
 
+    // ===== NEW PROJECT BUTTON =====
+    const createProjectBtn = document.getElementById('createProjectBtn');
+    if (createProjectBtn) {
+        createProjectBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openCreateProjectModal();
+        });
+    }
+
+    // ===== ADD TASK FROM PROJECTS BUTTON =====
     document.getElementById('addGroupTaskFromProjects').addEventListener('click', () => {
-        window.openTaskModal({ mode: 'add', taskType: 'Group' });
+        if (window._GroupState.activeProject) {
+            window.openTaskModal({
+                mode: 'add',
+                taskType: 'Group',
+                projectId: window._GroupState.activeProject
+            });
+        } else {
+            if (!window.projects || window.projects.length === 0) {
+                window.showToast('Create a project first before adding a task', 'warning');
+                return;
+            }
+            window.openTaskModal({
+                mode: 'add',
+                taskType: 'Group'
+            });
+        }
     });
 
+    // ===== PROJECT SEARCH =====
     const searchInput = document.getElementById('projectSearchInput');
     if (searchInput) {
         searchInput.addEventListener('input', e => {
             window._GroupState.projectSearch = e.target.value;
             renderGroupRoot();
-            // restore focus + cursor
             const newInput = document.getElementById('projectSearchInput');
             if (newInput) {
                 newInput.focus();
@@ -472,6 +600,7 @@ function renderGroupRoot() {
         });
     }
 
+    // ===== PROJECT CARD EXPANSION =====
     document.querySelectorAll('.project-card[data-project]').forEach(card => {
         const projectId = card.dataset.project;
         card.querySelector('.project-card-header')?.addEventListener('click', e => {
@@ -509,8 +638,19 @@ function renderProjectCard(p, isExpanded) {
     const projectTasks = (window.GroupTasks || []).filter(t => String(t.project_id) === String(p.id));
     const taskCount = projectTasks.length;
     const completedCount = projectTasks.filter(t => t.status === 'completed').length;
-    const progress = taskCount ? Math.round((completedCount / taskCount) * 100) : (p.progress || 0);
+    const overdueCount = projectTasks.filter(t => getEffectiveStatus(t) === 'overdue').length;
+    const progress = taskCount
+        ? Math.round((completedCount / taskCount) * 100)
+        : (p.progress || 0);
+
+    // ✅ Declared BEFORE it's used anywhere below
     const isLeader = isProjectLeader(p);
+
+    // Progress bar color, based on project state
+    let barClass = '';
+    if (overdueCount > 0)      barClass = 'bar-danger';
+    else if (progress === 100) barClass = 'bar-done';
+    else if (progress > 0)     barClass = 'bar-active';
 
     return `
         <div class="card project-card ${isExpanded ? 'expanded' : ''}" data-project="${p.id}">
@@ -521,35 +661,187 @@ function renderProjectCard(p, isExpanded) {
                         <span class="status-dot"></span>${p.status || 'planning'}
                     </span>
                 </div>
-                ${isLeader ? `<span class="leader-badge"><i class="bx bx-crown"></i> Leader</span>` : ''}
+                ${(() => {
+                    const leaderId = p.created_by || p.owner_id;
+                    const leaderMember = (window._projectLeaders && window._projectLeaders[p.id]) || null;
+                    const leaderName = leaderMember?.full_name
+                        || (String(leaderId) === String(window.currentUser?.id)
+                                ? (window.userProfile?.full_name || 'You')
+                                : 'Team member');
+
+                    const badgeLabel = isLeader ? 'You are the leader' : `${leaderName} · Leader`;
+
+                    return `
+                        <span class="leader-badge ${isLeader ? '' : 'muted'}"
+                            title="${window.escapeHtml(leaderName)}">
+                            <i class="bx bx-crown"></i> ${window.escapeHtml(badgeLabel)}
+                        </span>
+                    `;
+                })()}
                 <p>${window.escapeHtml(p.description || 'No description')}</p>
                 <div class="progress-track">
-                    <div class="progress-fill" style="width:${progress}%"></div>
+                    <div class="progress-fill ${barClass}" style="width:${progress}%"></div>
                 </div>
                 <div class="project-meta">
                     <span>${progress}% complete · ${taskCount} tasks</span>
                     <div class="members" id="members-${p.id}"></div>
                 </div>
             </div>
+
             <div class="project-card-footer">
                 ${isLeader
-                    ? `<button type="button" class="btn secondary btn-sm"
-                               data-add-member="${p.id}"
-                               title="Add member">
-                           <i class="bx bx-user-plus"></i> Add member
-                       </button>`
+                    ? `<div class="project-corner-actions">
+                        <button type="button"
+                                class="project-corner-btn"
+                                data-edit-project="${p.id}"
+                                title="Edit project">
+                            <i class="bx bx-edit"></i>
+                        </button>
+                        <button type="button"
+                                class="project-corner-btn project-corner-danger"
+                                data-delete-project="${p.id}"
+                                title="Delete project">
+                            <i class="bx bx-trash"></i>
+                        </button>
+                    </div>`
                     : ''}
-                <button type="button" class="btn ${isExpanded ? 'secondary' : 'primary'} project-expand-btn"
-                        data-toggle-expand="${p.id}">
-                    <i class="bx ${isExpanded ? 'bx-collapse-vertical' : 'bx-expand-vertical'}"></i>
-                    ${isExpanded ? 'Collapse' : 'Open workspace'}
-                </button>
+
+                <div class="project-card-main-actions">
+                    ${isLeader
+                        ? `<button type="button" class="btn secondary btn-sm"
+                                data-add-member="${p.id}"
+                                title="Add member">
+                            <i class="bx bx-user-plus"></i> Add member
+                        </button>`
+                        : ''}
+                    <button type="button" class="btn ${isExpanded ? 'secondary' : 'primary'} project-expand-btn"
+                            data-toggle-expand="${p.id}">
+                        <i class="bx ${isExpanded ? 'bx-collapse-vertical' : 'bx-expand-vertical'}"></i>
+                        ${isExpanded ? 'Collapse' : 'Open workspace'}
+                    </button>
+                </div>
             </div>
         </div>
     `;
 }
 
-// Bind "Add member" + "Toggle expand" buttons after render
+function openEditProjectModal(projectId) {
+    const project = (window.projects || []).find(p => String(p.id) === String(projectId));
+    if (!project) {
+        window.showToast('Project not found', 'error');
+        return;
+    }
+    if (!isProjectLeader(project)) {
+        window.showToast('Only the project leader can edit this project', 'warning');
+        return;
+    }
+
+    document.getElementById('editProjectModalRoot')?.remove();
+
+    const root = document.createElement('div');
+    root.id = 'editProjectModalRoot';
+    root.innerHTML = `
+        <div class="modal-backdrop" id="editProjectBackdrop"></div>
+        <div class="modal" id="editProjectModal" style="width:460px" role="dialog" aria-modal="true">
+            <div class="modal-head">
+                <div><div class="eyebrow">Edit Project</div><h2>Update Project</h2></div>
+                <button type="button" class="icon-btn" id="closeEditProjectModal" title="Close">
+                    <i class="bx bx-x"></i>
+                </button>
+            </div>
+            <form id="editProjectForm">
+                <div class="form-grid">
+                    <div class="full">
+                        <label>Project Name *</label>
+                        <input type="text" id="epName" required maxlength="120"
+                               value="${window.escapeHtml(project.name || '')}">
+                    </div>
+                    <div class="full">
+                        <label>Description</label>
+                        <textarea id="epDescription" rows="3"
+                                  placeholder="Optional details...">${window.escapeHtml(project.description || '')}</textarea>
+                    </div>
+                    <div>
+                        <label>Status</label>
+                        <select id="epStatus">
+                            <option value="planning"  ${project.status === 'planning'  ? 'selected' : ''}>Planning</option>
+                            <option value="active"    ${project.status === 'active'    ? 'selected' : ''}>Active</option>
+                            <option value="completed" ${project.status === 'completed' ? 'selected' : ''}>Completed</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>Due Date</label>
+                        <input type="date" id="epDueDate"
+                               value="${project.due_date ? String(project.due_date).slice(0, 10) : ''}">
+                    </div>
+                </div>
+                <p class="form-note" id="epError"></p>
+                <div class="modal-actions">
+                    <button type="button" class="btn secondary" id="cancelEditProject">Cancel</button>
+                    <button type="submit" class="btn primary" id="epSubmit">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    `;
+    document.body.appendChild(root);
+
+    const closeModal = () => root.remove();
+    document.getElementById('closeEditProjectModal').addEventListener('click', closeModal);
+    document.getElementById('cancelEditProject').addEventListener('click', closeModal);
+    document.getElementById('editProjectBackdrop').addEventListener('click', closeModal);
+
+    document.getElementById('editProjectForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const errorEl = document.getElementById('epError');
+        errorEl.textContent = '';
+
+        const name = document.getElementById('epName').value.trim();
+        const description = document.getElementById('epDescription').value.trim();
+        const status = document.getElementById('epStatus').value;
+        const due_date = document.getElementById('epDueDate').value || null;
+
+        if (!name) {
+            errorEl.textContent = 'Project name is required.';
+            return;
+        }
+
+        const submitBtn = document.getElementById('epSubmit');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Saving...';
+
+        try {
+            const { error } = await supabase
+                .from('projects')
+                .update({ name, description: description || null, status, due_date })
+                .eq('id', projectId);
+            if (error) throw error;
+
+            // Update local state
+            Object.assign(project, { name, description, status, due_date });
+
+            closeModal();
+            window.showToast(`Project "${name}" updated`, 'success');
+
+            if (String(window._GroupState.activeProject) === String(projectId)) {
+                renderProjectWorkspace(projectId);
+            } else {
+                renderGroupPage();
+            }
+        } catch (err) {
+            console.error('Edit project failed:', err);
+            errorEl.textContent = err.message || 'Failed to update project.';
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Save Changes';
+        }
+    });
+
+    requestAnimationFrame(() => {
+        document.getElementById('editProjectBackdrop').classList.add('show');
+        document.getElementById('editProjectModal').classList.add('show');
+        document.getElementById('epName').focus();
+    });
+}
+
 document.addEventListener('click', async (e) => {
     const addMemberBtn = e.target.closest('[data-add-member]');
     if (addMemberBtn) {
@@ -558,6 +850,23 @@ document.addEventListener('click', async (e) => {
         openAddMemberModal(addMemberBtn.dataset.addMember);
         return;
     }
+
+    const editProjectBtn = e.target.closest('[data-edit-project]');
+    if (editProjectBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        openEditProjectModal(editProjectBtn.dataset.editProject);
+        return;
+    }
+
+    const deleteProjectBtn = e.target.closest('[data-delete-project]');
+    if (deleteProjectBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        deleteProject(deleteProjectBtn.dataset.deleteProject);
+        return;
+    }
+
     const toggleBtn = e.target.closest('[data-toggle-expand]');
     if (toggleBtn) {
         e.preventDefault();
@@ -566,14 +875,8 @@ document.addEventListener('click', async (e) => {
     }
 });
 
-
-/**
- * Leader-only: change a project's status between planning / active / completed.
- * Updates Supabase + local cache, then re-renders.
- */
 async function changeProjectStatus(project, newStatus, projectId) {
     const previous = project.status;
-
     if (previous === newStatus) return;
 
     // Optimistic UI
@@ -602,35 +905,176 @@ async function changeProjectStatus(project, newStatus, projectId) {
             actionText: 'Undo',
             onAction: async () => {
                 project.status = previous;
-                await supabase.from('projects').update({ status: previous }).eq('id', project.id);
+                await supabase.from('projects')
+                    .update({ status: previous })
+                    .eq('id', project.id);
+                // Refresh so the header re-renders with the old colour
+                await window.loadProjects?.();
                 renderProjectWorkspace(projectId);
             }
         }
     );
 
-    // Also refresh the grid card in the background so it reflects the new status
-    window.loadProjects?.();
+    // Refresh the project list so status pills on cards update too
+    await window.loadProjects?.();
+    renderProjectWorkspace(projectId);
 }
 
 /**
- * Renders a "Final deliverables" strip at the bottom of the workspace.
- * Lists every file that has been uploaded directly to a task in this
- * project (not subtask versions, not comments). Shows filename,
- * uploader avatar + name, and how long ago — so all members can see
- * what the team has shipped as final versions.
+ * Deletes a project (and all its related tasks, subtasks, comments,
+ * attachments, and members). Only the project leader can do this.
+ */
+async function deleteProject(projectId) {
+    const project = (window.projects || []).find(p => String(p.id) === String(projectId));
+    if (!project) {
+        window.showToast('Project not found', 'error');
+        return;
+    }
+
+    // Guard: only the leader can delete
+    if (!isProjectLeader(project)) {
+        window.showToast('Only the project leader can delete this project', 'warning');
+        return;
+    }
+
+    const confirmed = await window.showConfirm({
+        title: 'Delete this project?',
+        message: `"${project.name}" and all of its tasks, subtasks, comments, and files will be permanently deleted. This cannot be undone.`,
+        confirmText: 'Delete project',
+        cancelText: 'Cancel',
+        variant: 'danger',
+        icon: 'bx-trash'
+    });
+    if (!confirmed) return;
+
+    try {
+        // 1. Collect all task ids for this project
+        const projectTaskIds = (window.GroupTasks || [])
+            .filter(t => String(t.project_id) === String(projectId))
+            .map(t => t.id);
+
+        // 2. Collect all subtask ids under those tasks
+        let subtaskIds = [];
+        if (projectTaskIds.length) {
+            const { data: subtasks } = await supabase
+                .from('subtasks')
+                .select('id')
+                .in('task_id', projectTaskIds);
+            subtaskIds = (subtasks || []).map(s => s.id);
+        }
+
+        // 3. Collect all comment ids under those tasks
+        let commentIds = [];
+        if (projectTaskIds.length) {
+            const { data: comments } = await supabase
+                .from('comments')
+                .select('id')
+                .in('task_id', projectTaskIds);
+            commentIds = (comments || []).map(c => c.id);
+        }
+
+        // 4. Delete all attachments (storage + DB rows)
+        const { data: attachments } = await supabase
+            .from('task_attachments')
+            .select('id, file_path')
+            .or(
+                [
+                    projectTaskIds.length ? `task_id.in.(${projectTaskIds.join(',')})` : null,
+                    subtaskIds.length ? `subtask_id.in.(${subtaskIds.join(',')})` : null,
+                    commentIds.length ? `comment_id.in.(${commentIds.join(',')})` : null,
+                    `project_id.eq.${projectId}`
+                ].filter(Boolean).join(',')
+            );
+
+        if (attachments && attachments.length) {
+            const paths = attachments.map(a => a.file_path).filter(Boolean);
+            if (paths.length) {
+                await supabase.storage.from('task-attachments').remove(paths);
+            }
+            await supabase
+                .from('task_attachments')
+                .delete()
+                .in('id', attachments.map(a => a.id));
+        }
+
+        // 5. Delete comments
+        if (commentIds.length) {
+            await supabase.from('comments').delete().in('id', commentIds);
+        }
+
+        // 6. Delete subtasks
+        if (subtaskIds.length) {
+            await supabase.from('subtasks').delete().in('id', subtaskIds);
+        }
+
+        // 7. Delete tasks
+        if (projectTaskIds.length) {
+            await supabase.from('tasks').delete().in('id', projectTaskIds);
+        }
+
+        // 8. Delete project members
+        await supabase.from('project_members').delete().eq('project_id', projectId);
+
+        // 9. Delete the project itself
+        const { error: projErr } = await supabase
+            .from('projects')
+            .delete()
+            .eq('id', projectId);
+        if (projErr) throw projErr;
+
+        // 10. Clear local state
+        if (window._projectMemberCache) delete window._projectMemberCache[projectId];
+        window.GroupTasks = (window.GroupTasks || []).filter(
+            t => String(t.project_id) !== String(projectId)
+        );
+        if (String(window._GroupState.activeProject) === String(projectId)) {
+            window._GroupState.activeProject = null;
+        }
+
+        window.showToast(`Project "${project.name}" deleted`, 'success');
+
+        // Clear from leader cache
+        if (window._projectLeaders) delete window._projectLeaders[projectId];
+
+        // Refresh projects + re-render
+        await window.loadProjects?.();
+        renderGroupPage();
+    } catch (err) {
+        console.error('Delete project failed:', err);
+        window.showToast(
+            err.message?.includes('policy') || err.message?.includes('RLS')
+                ? 'Only the project owner can delete this project'
+                : 'Failed to delete project',
+            'error',
+            4000
+        );
+    }
+}
+
+/**
+ * Renders the "Final deliverables" strip at the bottom of the workspace.
+ * Combines:
+ *   - Task-level files (final versions attached to tasks in this project)
+ *   - Project-level files (uploaded via the "Attach file" button)
  */
 function renderFinalDeliverables(project, tasks, members) {
-    // Gather all attachments that belong to any task in this project
-    // (not subtasks, not comments)
     const projectTaskIds = new Set(tasks.map(t => String(t.id)));
     const finalFiles = [];
 
+    // --- Task-level attachments ---
     Object.values(window._GroupState.attachments || {}).forEach(files => {
         files.forEach(file => {
             if (file.task_id && projectTaskIds.has(String(file.task_id))) {
                 finalFiles.push(file);
             }
         });
+    });
+
+    // --- Project-level attachments (stored under __project__<id>) ---
+    const projectKey = `__project__${project.id}`;
+    const projectFiles = window._GroupState.attachments[projectKey] || [];
+    projectFiles.forEach(file => {
+        finalFiles.push({ ...file, __isProjectLevel: true });
     });
 
     // Sort by most recent first
@@ -643,7 +1087,7 @@ function renderFinalDeliverables(project, tasks, members) {
                     <h3><i class="bx bx-package"></i> Final deliverables</h3>
                     <span class="final-count">0 files</span>
                 </div>
-                <p class="final-empty">No final versions uploaded yet. Attach a file to any task to add one.</p>
+                <p class="final-empty">No final versions uploaded yet. Attach a file to any task, or click "Attach file" above to upload a project-level file.</p>
             </div>
         `;
     }
@@ -659,8 +1103,14 @@ function renderFinalDeliverables(project, tasks, members) {
                     const uploader = memberById(members, file.uploaded_by);
                     const uploaderName = uploader?.full_name || 'Team member';
                     const uploadedAt = formatCommentTime(file.created_at);
-                    const task = tasks.find(t => String(t.id) === String(file.task_id));
-                    const taskName = task?.title || 'Unknown task';
+
+                    let sourceLabel;
+                    if (file.__isProjectLevel) {
+                        sourceLabel = 'Project file';
+                    } else {
+                        const task = tasks.find(t => String(t.id) === String(file.task_id));
+                        sourceLabel = `on "${window.escapeHtml(task?.title || 'Unknown task')}"`;
+                    }
 
                     return `
                         <li class="final-item">
@@ -680,7 +1130,7 @@ function renderFinalDeliverables(project, tasks, members) {
                                     <span>·</span>
                                     <span>${window.escapeHtml(uploadedAt)}</span>
                                     <span>·</span>
-                                    <span class="final-task-ref">on "${window.escapeHtml(taskName)}"</span>
+                                    <span class="final-task-ref">${sourceLabel}</span>
                                     <span>·</span>
                                     <span>${formatFileSize(file.file_size)}</span>
                                 </div>
@@ -706,6 +1156,25 @@ function renderFinalDeliverables(project, tasks, members) {
 // ============================================================================
 // 6. PROJECT WORKSPACE
 // ============================================================================
+// group.js — example renderer
+function renderWorkspaceStats(stats) {
+  const container = document.querySelector('.workspace-stats');
+  if (!container) return;
+
+  const map = {
+    pending:      'stat--pending',
+    'in-progress':'stat--in-progress',
+    completed:    'stat--completed',
+    cancelled:    'stat--cancelled',
+  };
+
+  container.innerHTML = Object.entries(stats).map(([status, count]) => `
+    <div class="stat ${map[status] ?? ''}">
+      <span class="stat__value">${count}</span>
+      <span class="stat__label">${status.replace('-', ' ')}</span>
+    </div>
+  `).join('');
+}
 
 async function renderProjectWorkspace(projectId) {
     const mount = document.getElementById('groupWorkspaceMount');
@@ -728,138 +1197,127 @@ async function renderProjectWorkspace(projectId) {
     const allTaskIds = projectTasks.map(t => t.id);
     await loadSubtasksForTasks(allTaskIds);
     await loadGroupComments(allTaskIds);
-    await loadGroupAttachments(allTaskIds);
+    await loadGroupAttachments(allTaskIds, projectId);
 
     const isLeader = isProjectLeader(project);
 
-mount.innerHTML = `
-    <div class="group-workspace card">
-        <div class="workspace-header refined">
-            <div class="workspace-title-block">
-                <span class="eyebrow">Now viewing</span>
-                <h2 class="project-title">${window.escapeHtml(project.name)}</h2>
-                <div class="workspace-subline">
-                    ${isLeader
-                        ? '<span class="leader-badge"><i class="bx bx-crown"></i> You are the leader</span>'
-                        : '<span class="leader-badge muted"><i class="bx bx-user"></i> Member</span>'}
-                    <span class="workspace-meta-sep">·</span>
-                    <span class="workspace-date">Created ${window.fmtDate(project.created_at)}</span>
-                    ${project.due_date ? `
+    mount.innerHTML = `
+        <br>
+        <div class="group-workspace card">
+            <div class="workspace-header refined">
+                <div class="workspace-title-block">
+                    <span class="eyebrow">Now viewing</span>
+                    <h2 class="project-title">${window.escapeHtml(project.name)}</h2>
+                    <div class="workspace-subline">
+                        ${isLeader
+                            ? '<span class="leader-badge"><i class="bx bx-crown"></i> You are the leader</span>'
+                            : '<span class="leader-badge muted"><i class="bx bx-user"></i> Member</span>'}
                         <span class="workspace-meta-sep">·</span>
-                        <span class="workspace-date">Due ${window.fmtDate(project.due_date)}</span>
-                    ` : ''}
+                        <span class="workspace-date">Created ${window.fmtDate(project.created_at)}</span>
+                        ${project.due_date ? `
+                            <span class="workspace-meta-sep">·</span>
+                            <span class="workspace-date">Due ${window.fmtDate(project.due_date)}</span>
+                        ` : ''}
+                    </div>
                 </div>
-            </div>
 
-            <div class="workspace-header-actions">
-                ${isLeader
-                    ? `<div class="project-status-control">
-                           <label for="projectStatusSelect" class="status-control-label">Project status</label>
-                           <select id="projectStatusSelect" class="select project-status-select status-${project.status || 'planning'}">
-                               <option value="planning"  ${project.status === 'planning' ? 'selected' : ''}>Planning</option>
-                               <option value="active"    ${project.status === 'active' ? 'selected' : ''}>Active</option>
-                               <option value="completed" ${project.status === 'completed' ? 'selected' : ''}>Completed</option>
-                           </select>
-                       </div>`
-                    : `<span class="status-badge ${project.status === 'active' ? 'in-progress' : project.status === 'completed' ? 'completed' : 'pending'}">
-                           <span class="status-dot"></span>${project.status || 'planning'}
-                       </span>`}
-                <button type="button" class="icon-btn" id="closeWorkspaceBtn" title="Close workspace">
+                <div class="workspace-header-actions">
+                    ${isLeader
+                        ? `<div class="workspace-icon-group">
+                            <button type="button" class="icon-btn danger" id="deleteProjectBtn" title="Delete project">
+                                <i class="bx bx-trash"></i>
+                            </button>
+                            <button type="button" class="icon-btn" id="closeWorkspaceBtn" title="Close workspace">
+                                <i class="bx bx-x"></i>
+                            </button>
+                        </div>`
+                        : `<button type="button" class="icon-btn" id="closeWorkspaceBtn" title="Close workspace">
+                            <i class="bx bx-x"></i>
+                        </button>`}
+
+                    ${isLeader
+                        ? `<div class="project-status-control">
+                            <label for="projectStatusSelect" class="status-control-label">Project status</label>
+                            <select id="projectStatusSelect" class="select project-status-select status-${project.status || 'planning'}">
+                                <option value="planning"  ${project.status === 'planning'  ? 'selected' : ''}>Planning</option>
+                                <option value="active"    ${project.status === 'active'    ? 'selected' : ''}>Active</option>
+                                <option value="completed" ${project.status === 'completed' ? 'selected' : ''}>Completed</option>
+                            </select>
+                        </div>`
+                        : `<span class="status-badge ${project.status === 'active' ? 'in-progress' : project.status === 'completed' ? 'completed' : 'pending'}">
+                            <span class="status-dot"></span>${project.status || 'planning'}
+                        </span>`}
+                        </div>
+            <div class="workspace-toolbar">
+                <div class="search-box">
+                    <i class="bx bx-search"></i>
+                    <input type="text" id="groupSearch"
+                           placeholder="Search tasks..."
+                           value="${window.escapeHtml(state.search || '')}">
+                </div>
+
+                <select class="select" id="groupStatusFilter">
+                    <option value="">All statuses</option>
+                    <option value="pending"     ${state.status === 'pending'     ? 'selected' : ''}>Pending</option>
+                    <option value="in-progress" ${state.status === 'in-progress' ? 'selected' : ''}>In Progress</option>
+                    <option value="overdue"     ${state.status === 'overdue'     ? 'selected' : ''}>Overdue</option>
+                    <option value="completed"   ${state.status === 'completed'   ? 'selected' : ''}>Completed</option>
+                </select>
+
+                <select class="select" id="groupPriorityFilter">
+                    <option value="">All priorities</option>
+                    <option value="high"   ${state.priority === 'high'   ? 'selected' : ''}>High</option>
+                    <option value="medium" ${state.priority === 'medium' ? 'selected' : ''}>Medium</option>
+                    <option value="low"    ${state.priority === 'low'    ? 'selected' : ''}>Low</option>
+                </select>
+
+                <button type="button" class="btn ghost" id="clearGroupFilters" title="Clear filters">
                     <i class="bx bx-x"></i>
                 </button>
-            </div>
-        </div>
 
-        <div class="workspace-stats">
-            <div class="workspace-stat">
-                <span class="workspace-stat-label">Tasks</span>
-                <strong>${projectTasks.length}</strong>
-            </div>
-            <div class="workspace-stat">
-                <span class="workspace-stat-label">Completed</span>
-                <strong>${projectTasks.filter(t => t.status === 'completed').length}</strong>
-            </div>
-            <div class="workspace-stat">
-                <span class="workspace-stat-label">In Progress</span>
-                <strong>${projectTasks.filter(t => getEffectiveStatus(t) === 'in-progress').length}</strong>
-            </div>
-            <div class="workspace-stat">
-                <span class="workspace-stat-label">Overdue</span>
-                <strong class="text-red">${projectTasks.filter(t => getEffectiveStatus(t) === 'overdue').length}</strong>
-            </div>
-            <div class="workspace-stat workspace-stat-members">
-                <span class="workspace-stat-label">Members</span>
-                <div class="members">
-                    ${members.slice(0, 6).map(m =>
-                        `<span class="member" title="${window.escapeHtml(m.full_name)}">${window.escapeHtml((m.full_name || '?').charAt(0))}</span>`
-                    ).join('')}
-                    ${members.length > 6 ? `<span class="member member-more">+${members.length - 6}</span>` : ''}
+                <div class="view-toggle segmented">
+                    <button type="button" data-gview="list"     class="${state.view === 'list'     ? 'active' : ''}">List</button>
+                    <button type="button" data-gview="card"     class="${state.view === 'card'     ? 'active' : ''}">Cards</button>
+                    <button type="button" data-gview="timeline" class="${state.view === 'timeline' ? 'active' : ''}">Timeline</button>
+                </div>
+
+                <div class="toolbar-cta">
+                    ${isLeader ? `
+                        <button type="button" class="btn secondary attach-btn" id="attachProjectFileBtn" title="Attach project file">
+                            <i class="bx bx-paperclip"></i> <span class="btn-text">Attach file</span>
+                        </button>
+                    ` : ''}
+                    <button type="button" class="btn primary" id="addGroupTaskBtn">
+                        <i class="bx bx-plus"></i> <span class="btn-text">Add Task</span>
+                    </button>
                 </div>
             </div>
-        </div>
 
-                <div class="workspace-toolbar">
-            <div class="search-box">
-                <i class="bx bx-search"></i>
-                <input type="text" id="groupSearch" placeholder="Search tasks..." value="${window.escapeHtml(state.search)}">
-            </div>
-            <select id="groupStatusFilter" class="select">
-                <option value="" ${state.status === '' ? 'selected' : ''}>All Status</option>
-                <option value="pending" ${state.status === 'pending' ? 'selected' : ''}>Pending</option>
-                <option value="in-progress" ${state.status === 'in-progress' ? 'selected' : ''}>In Progress</option>
-                <option value="overdue" ${state.status === 'overdue' ? 'selected' : ''}>Overdue</option>
-                <option value="completed" ${state.status === 'completed' ? 'selected' : ''}>Completed</option>
-            </select>
-            <select id="groupPriorityFilter" class="select">
-                <option value="" ${state.priority === '' ? 'selected' : ''}>All Priority</option>
-                <option value="high" ${state.priority === 'high' ? 'selected' : ''}>High</option>
-                <option value="medium" ${state.priority === 'medium' ? 'selected' : ''}>Medium</option>
-                <option value="low" ${state.priority === 'low' ? 'selected' : ''}>Low</option>
-            </select>
-            <button type="button" class="btn secondary" id="clearGroupFilters">Clear</button>
-            <div class="segmented view-toggle">
-                <button type="button" data-gview="list" class="${state.view === 'card' || state.view === 'timeline' ? '' : 'active'}">List</button>
-                <button type="button" data-gview="card" class="${state.view === 'card' ? 'active' : ''}">Card</button>
-                <button type="button" data-gview="timeline" class="${state.view === 'timeline' ? 'active' : ''}">Timeline</button>
+            <div id="GroupTasksContainer">
+                ${tasks.length === 0
+                    ? window.renderEmptyState('\u25cb', 'No tasks yet', 'Add the first task for this project.')
+                    : (state.view === 'card'
+                        ? renderGroupTaskCards(tasks, members, project)
+                        : state.view === 'timeline'
+                            ? renderGroupTimeline(tasks, members)
+                            : renderGroupTaskList(tasks, members, project))}
             </div>
 
-            <div class="toolbar-cta">
-                ${isLeader
-                    ? `<button type="button" class="btn secondary attach-btn" id="attachProjectFileBtn" title="Upload a project-level file">
-                           <i class="bx bx-paperclip"></i>
-                           <span class="btn-text">Attach file</span>
-                       </button>`
-                    : ''}
-                <button type="button" class="btn primary" id="addGroupTaskBtn" title="Add a new task">
-                    <i class="bx bx-plus"></i>
-                    <span class="btn-text">Add Task</span>
-                </button>
-            </div>
+            ${renderFinalDeliverables(project, tasks, members)}
+
+            ${renderGroupComments(tasks, members)}
+            ${renderSubtaskDetailPanel(members)}
         </div>
-
-        <div id="GroupTasksContainer">
-            ${tasks.length === 0
-                ? window.renderEmptyState('\u25cb', 'No tasks yet', 'Add the first task for this project.')
-                : (state.view === 'card'
-                    ? renderGroupTaskCards(tasks, members, project)
-                    : state.view === 'timeline'
-                        ? renderGroupTimeline(tasks, members)
-                        : renderGroupTaskList(tasks, members, project))}
-        </div>
-
-        ${renderFinalDeliverables(project, tasks, members)}
-
-        ${renderGroupComments(tasks, members)}
-        ${renderSubtaskDetailPanel(members)}
-    </div>
-`;
+    `;
 
     document.getElementById('closeWorkspaceBtn')?.addEventListener('click', () => {
         window._GroupState.activeProject = null;
         renderGroupPage();
     });
+    document.getElementById('deleteProjectBtn')?.addEventListener('click', () => {
+        deleteProject(projectId);
+    });
 
-    // Leader-only project status change
     const statusSelect = document.getElementById('projectStatusSelect');
     if (statusSelect) {
         statusSelect.addEventListener('change', async (e) => {
@@ -870,7 +1328,6 @@ mount.innerHTML = `
 
     bindGroupWorkspaceEvents(projectId, tasks, members, project);
 
-    // Load member avatars in the grid card
     window.loadProjectMembers(projectId).then(m => {
         const el = document.getElementById(`members-${projectId}`);
         if (!el) return;
@@ -880,9 +1337,6 @@ mount.innerHTML = `
     });
 }
 
-/**
- * Friendly "X days left" / "X days overdue" string (used in card view).
- */
 function daysLeftLabel(dueDate) {
     if (!dueDate) return '';
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -895,7 +1349,7 @@ function daysLeftLabel(dueDate) {
     if (days === -1) return '1 day overdue';
     if (days < 0) return `${Math.abs(days)} days overdue`;
     return `${days} days left`;
-}   
+}
 
 function filterGroupTasks(tasks, state) {
     const query = state.search.trim().toLowerCase();
@@ -922,24 +1376,21 @@ function subtaskChip(taskId) {
     </span>`;
 }
 
-/**
- * Get a member's display name by userId. THIS WAS MISSING.
- */
 function memberNameFor(members, userId) {
     if (!userId) return 'Unassigned';
-    if (!Array.isArray(members)) return 'Team member';
-    const m = members.find(mm => String(mm.id) === String(userId));
-    return m ? (m.full_name || 'Team member') : 'Team member';
+    let m = null;
+    if (Array.isArray(members)) {
+        m = members.find(mm => String(mm.id) === String(userId));
+    }
+    if (!m && window._allProfiles) {
+        m = window._allProfiles[String(userId)] || null;
+    }
+    if (!m && String(userId) === String(window.currentUser?.id) && window.userProfile) {
+        m = window.userProfile;
+    }
+    return m ? (m.full_name || 'Team member') : 'Unassigned';
 }
 
-/**
- * Renders inline subtask rows under a task in List view.
- * Each row shows:
- *   - checkbox (complete toggle)
- *   - title
- *   - assignee name + version badges
- *   - always-visible action buttons (view / attach / delete)
- */
 function renderSubtaskDetails(taskId, members) {
     const subtasks = window._GroupState.subtasksByTask[taskId] || [];
     if (subtasks.length === 0) return '';
@@ -969,6 +1420,11 @@ function renderSubtaskDetails(taskId, members) {
                             <i class="bx bx-show"></i>
                         </button>
                         <button type="button" class="primary"
+                                data-subtask-edit="${subtask.id}"
+                                title="Edit subtask">
+                            <i class="bx bx-edit"></i>
+                        </button>
+                        <button type="button" class="primary"
                                 data-subtask-attachment="${subtask.id}"
                                 title="Add next version">
                             <i class="bx bx-paperclip"></i>
@@ -984,10 +1440,7 @@ function renderSubtaskDetails(taskId, members) {
         }).join('')}
     </div>`;
 }
-/**
- * NEW (#7) — Renders small version badges for subtask attachments in the
- * inline subtask list. e.g. "v1 v2 v3"
- */
+
 function renderSubtaskAttachmentBadges(subtaskId) {
     const files = window._GroupState.attachments[subtaskId] || [];
     if (!files.length) return '';
@@ -1002,14 +1455,6 @@ function renderSubtaskAttachmentBadges(subtaskId) {
     `;
 }
 
-/**
- * Renders the subtask cards used in the Card view of a task.
- * Each card shows:
- *   - checkbox (complete toggle)
- *   - title
- *   - assignee + version badges
- *   - three actions: view details / attach next version / delete
- */
 function renderSubtaskCards(taskId, members) {
     const subtasks = window._GroupState.subtasksByTask[taskId] || [];
     if (subtasks.length === 0) return '<div class="subtask-empty">No subtasks yet</div>';
@@ -1039,6 +1484,10 @@ function renderSubtaskCards(taskId, members) {
                             <i class="bx bx-show"></i>
                         </button>
                         <button type="button" class="subtask-attachment-button"
+                                data-subtask-edit="${subtask.id}" title="Edit subtask">
+                            <i class="bx bx-edit"></i>
+                        </button>
+                        <button type="button" class="subtask-attachment-button"
                                 data-subtask-attachment="${subtask.id}" title="Add next version">
                             <i class="bx bx-paperclip"></i>
                         </button>
@@ -1051,6 +1500,136 @@ function renderSubtaskCards(taskId, members) {
             `;
         }).join('')}
     </div>`;
+}
+// ============================================================================
+// EDIT SUBTASK MODAL
+// ============================================================================
+
+function editGroupSubtask(subtask, projectId, members = []) {
+    document.getElementById('editSubtaskModalRoot')?.remove();
+
+    const currentAssigneeId = subtask.assignee_id || '';
+
+    const root = document.createElement('div');
+    root.id = 'editSubtaskModalRoot';
+    root.innerHTML = `
+        <div class="modal-backdrop" id="editSubtaskModalBackdrop"></div>
+        <div class="modal" id="editSubtaskModal" style="width:440px" role="dialog" aria-modal="true">
+            <div class="modal-head">
+                <div><div class="eyebrow">Edit Subtask</div><h2>Update Subtask</h2></div>
+                <button type="button" class="icon-btn" id="closeEditSubtaskModal" title="Close">
+                    <i class="bx bx-x"></i>
+                </button>
+            </div>
+            <form id="editSubtaskForm">
+                <div class="form-grid">
+                    <div class="full">
+                        <label>Title</label>
+                        <input type="text" id="editSubtaskTitleInput"
+                               value="${window.escapeHtml(subtask.title || '')}"
+                               maxlength="150" required>
+                    </div>
+                    <div class="full">
+                        <label>Assign to</label>
+                        <select id="editSubtaskAssigneeSelect">
+                            <option value="">Unassigned</option>
+                            ${members.map(m => `
+                                <option value="${window.escapeHtml(m.id)}"
+                                    ${String(m.id) === String(currentAssigneeId) ? 'selected' : ''}>
+                                    ${window.escapeHtml(m.full_name)}
+                                </option>
+                            `).join('')}
+                        </select>
+                    </div>
+                    <div class="full">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                            <input type="checkbox" id="editSubtaskCompleted"
+                                   ${subtask.completed ? 'checked' : ''}
+                                   style="width:auto;margin:0">
+                            <span>Mark as completed</span>
+                        </label>
+                    </div>
+                </div>
+                <p class="form-note" id="editSubtaskError"></p>
+                <div class="modal-actions">
+                    <button type="button" class="btn secondary" id="cancelEditSubtask">Cancel</button>
+                    <button type="submit" class="btn primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    `;
+    document.body.appendChild(root);
+
+    const closeModal = () => root.remove();
+
+    document.getElementById('closeEditSubtaskModal').addEventListener('click', closeModal);
+    document.getElementById('cancelEditSubtask').addEventListener('click', closeModal);
+    document.getElementById('editSubtaskModalBackdrop').addEventListener('click', closeModal);
+
+    document.getElementById('editSubtaskForm').addEventListener('submit', async (event) => {
+        event.preventDefault();
+
+        const errorEl = document.getElementById('editSubtaskError');
+        errorEl.textContent = '';
+
+        const newTitle = document.getElementById('editSubtaskTitleInput').value.trim();
+        const newAssignee = document.getElementById('editSubtaskAssigneeSelect').value || null;
+        const newCompleted = document.getElementById('editSubtaskCompleted').checked;
+
+        if (!newTitle) {
+            errorEl.textContent = 'Title is required.';
+            return;
+        }
+
+        const previous = {
+            title: subtask.title,
+            assignee_id: subtask.assignee_id,
+            completed: subtask.completed
+        };
+
+        // Optimistic UI update
+        subtask.title = newTitle;
+        subtask.assignee_id = newAssignee;
+        subtask.completed = newCompleted;
+
+        try {
+            const { error } = await supabase
+                .from('subtasks')
+                .update({
+                    title: newTitle,
+                    assignee_id: newAssignee,
+                    completed: newCompleted
+                })
+                .eq('id', subtask.id);
+
+            if (error) throw error;
+
+            closeModal();
+            window.showToast('Subtask updated', 'success');
+
+            // Refresh the workspace so the new assignee / title / state show up
+            renderProjectWorkspace(projectId);
+
+            // If a subtask just got completed, offer to complete the parent task
+            if (newCompleted && !previous.completed) {
+                await maybeOfferTaskCompletion(subtask.task_id, projectId);
+            }
+        } catch (err) {
+            console.error('Edit subtask failed:', err);
+            // Rollback optimistic update
+            subtask.title = previous.title;
+            subtask.assignee_id = previous.assignee_id;
+            subtask.completed = previous.completed;
+            errorEl.textContent = err.message || 'Failed to update subtask. Please try again.';
+        }
+    });
+
+    requestAnimationFrame(() => {
+        document.getElementById('editSubtaskModalBackdrop').classList.add('show');
+        document.getElementById('editSubtaskModal').classList.add('show');
+        document.getElementById('editSubtaskTitleInput').focus();
+        document.getElementById('editSubtaskTitleInput').select();
+    });
 }
 
 function renderGroupTaskList(tasks, members, project) {
@@ -1066,7 +1645,7 @@ function renderGroupTaskList(tasks, members, project) {
                         <th class="sortable-header" data-gsort="priority">Priority${getGroupSortIndicator('priority')}</th>
                         <th class="sortable-header" data-gsort="status">Status${getGroupSortIndicator('status')}</th>
                         <th class="sortable-header" data-gsort="due">Due Date${getGroupSortIndicator('due')}</th>
-                        <th>Actions</th>
+                        <th class="actions-header">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1076,8 +1655,11 @@ function renderGroupTaskList(tasks, members, project) {
                         const isInProgress = t.status === 'in-progress';
                         const isOverdue = t.due_date && !isCompleted && t.due_date < today;
 
-                        // Build the status pills: if overdue, show BOTH
-                        // "Overdue" AND the real status (Pending / In Progress).
+                        // 👇 count subtasks for this task
+                        const subtasks = window._GroupState.subtasksByTask[t.id] || [];
+                        const subtaskCount = subtasks.length;
+                        const actionsRowSpan = subtaskCount + 1;  // main row + N subtask rows
+
                         const statusPills = isOverdue
                             ? `<span class="status-pill overdue"><span class="status-dot"></span>Overdue</span>
                                <span class="status-pill ${isInProgress ? 'in-progress' : 'pending'}">
@@ -1088,31 +1670,95 @@ function renderGroupTaskList(tasks, members, project) {
                                </span>`;
 
                         return `
-                            <tr data-view="${t.id}">
+                            <!-- 👇 MAIN ROW -->
+                            <tr data-view="${t.id}" class="task-main-row">
                                 <td class="title-cell">
                                     ${window.escapeHtml(t.title)}
                                     ${subtaskChip(t.id)}
                                     ${renderAttachmentChips(t.id)}
                                     <div class="desc-preview">${window.escapeHtml((t.description || '').slice(0, 60))}</div>
-                                    ${renderSubtaskDetails(t.id, members)}
                                 </td>
                                 <td>${renderAssignee(members, t.assignee_id)}</td>
                                 <td><span class="badge ${t.priority}">${t.priority || '-'}</span></td>
                                 <td><div class="status-combo">${statusPills}</div></td>
-                                <td>
+                                <td class="due-cell" title="${dueTooltip(t.due_date, t.status)}">
                                     <div>${window.fmtDate(t.due_date)}</div>
                                     ${renderCountdown(t.due_date)}
                                 </td>
-                                <td class="row-actions">
-                                    ${groupTaskActions(t, { showAttachment: false, project })}
+                                <td class="row-actions" rowspan="${actionsRowSpan}">
+                                    <div class="row-actions-inner">
+                                        ${groupTaskActions(t, { showAttachment: false, project })}
+                                    </div>
                                 </td>
                             </tr>
+
+                            <!-- 👇 ONE EXTRA ROW PER SUBTASK, sharing the actions cell -->
+                            ${subtasks.map(sub => `
+                                <tr class="subtask-row" data-subtask-of="${t.id}">
+                                    <td colspan="5" class="subtask-row-cell">
+                                        <div class="group-subtask ${sub.completed ? 'completed' : ''}">
+                                            <button type="button"
+                                                    class="subtask-check ${sub.completed ? 'completed' : ''}"
+                                                    data-subtask-complete="${sub.id}"
+                                                    title="${sub.completed ? 'Mark incomplete' : 'Mark complete'}">
+                                                <i class="bx ${sub.completed ? 'bx-check' : ''}"></i>
+                                            </button>
+                                            <span class="subtask-title">${window.escapeHtml(sub.title)}</span>
+                                            <small>
+                                                ${window.escapeHtml(memberNameFor(members, sub.assignee_id))}
+                                                ${(window._GroupState.attachments[sub.id] || []).length
+                                                    ? `<span class="version-badges">${(window._GroupState.attachments[sub.id] || []).map(f => `<span class="version-badge">v${f.version || '?'}</span>`).join('')}</span>`
+                                                    : ''}
+                                            </small>
+                                            <div class="subtask-actions">
+                                                <button type="button" class="primary"
+                                                        data-subtask-detail="${sub.id}"
+                                                        title="View details">
+                                                    <i class="bx bx-show"></i>
+                                                </button>
+                                                <button type="button" class="primary"
+                                                        data-subtask-edit="${sub.id}"
+                                                        title="Edit subtask">
+                                                    <i class="bx bx-edit"></i>
+                                                </button>
+                                                <button type="button" class="primary"
+                                                        data-subtask-attachment="${sub.id}"
+                                                        title="Add next version">
+                                                    <i class="bx bx-paperclip"></i>
+                                                </button>
+                                                <button type="button" class="danger"
+                                                        data-subtask-delete="${sub.id}"
+                                                        title="Delete subtask">
+                                                    <i class="bx bx-trash"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            `).join('')}
                         `;
                     }).join('')}
                 </tbody>
             </table>
         </div>
     `;
+}
+
+function dueTooltip(dueDate, status) {
+    if (!dueDate) return 'No due date';
+    if (status === 'completed') return `Completed · was due ${window.fmtDate(dueDate)}`;
+
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const due = new Date(dueDate + 'T00:00:00');
+    if (Number.isNaN(due.getTime())) return '';
+
+    const days = Math.round((due - today) / 86400000);
+
+    if (days === 0)  return 'Due today';
+    if (days === 1)  return 'Due tomorrow';
+    if (days === -1) return '1 day overdue';
+    if (days < 0)    return `${Math.abs(days)} days overdue`;
+    return `${days} days left`;
 }
 
 function renderGroupTaskCards(tasks, members, project) {
@@ -1122,7 +1768,9 @@ function renderGroupTaskCards(tasks, members, project) {
             ${ordered.map(t => {
                 const eff = getEffectiveStatus(t);
                 const dLeft = daysLeftLabel(t.due_date);
-                const dLeftClass = dLeft.includes('overdue') ? 'text-red' : dLeft === 'Due today' ? 'text-amber' : 'text-muted';
+                const dLeftClass = dLeft.includes('overdue')
+                    ? 'text-red'
+                    : dLeft === 'Due today' ? 'text-amber' : 'text-muted';
                 return `
                     <div class="task-card" data-view="${t.id}">
                         <div class="project-top">
@@ -1138,12 +1786,12 @@ function renderGroupTaskCards(tasks, members, project) {
                             <span class="subtask-section-label">Subtasks</span>
                             ${renderSubtaskCards(t.id, members)}
                         </div>
-                        <div class="card-bottom" style="margin-top:10px">
-                            <span class="card-meta">
-                                ${renderAssignee(members, t.assignee_id)} ·
-                                ${window.fmtDate(t.due_date)}
-                            </span>
-                            ${renderCountdown(t.due_date)}
+                        <div class="card-bottom">
+                            <div class="card-meta-block" title="${dueTooltip(t.due_date, t.status)}">
+                                <span class="card-meta">${renderAssignee(members, t.assignee_id)}</span>
+                                <span class="card-meta-date">${window.fmtDate(t.due_date)}</span>
+                                ${dLeft ? `<span class="countdown ${dLeftClass}">${dLeft}</span>` : ''}
+                            </div>
                             <div class="row-actions">${groupTaskActions(t, { project })}</div>
                         </div>
                     </div>
@@ -1168,12 +1816,10 @@ function renderGroupTimeline(tasks, members) {
     const rEnd = Math.max(...rows.map(r => r.end));
     const range = Math.max(rEnd - rStart, day);
 
-    // Build weekly labels
     const weekLabels = [];
     const startDate = new Date(rStart);
-    // Snap to Monday of that week
     const firstMonday = new Date(startDate);
-    const dayOfWeek = (firstMonday.getDay() + 6) % 7; // 0 = Mon
+    const dayOfWeek = (firstMonday.getDay() + 6) % 7;
     firstMonday.setDate(firstMonday.getDate() - dayOfWeek);
 
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -1222,54 +1868,77 @@ function renderGroupTimeline(tasks, members) {
     `;
 }
 
+/**
+ * Renders the inline workflow actions (start/pause/complete/reopen,
+ * comments, attachment, add subtask). Edit + Delete now live in the
+ * top-right corner — see `groupTaskCornerActions()`.
+ */
 function groupTaskActions(task, options = {}) {
     const { showAttachment = true, project } = options;
     const subs = window._GroupState.subtasksByTask[task.id] || [];
     const allSubsDone = subs.length === 0 || subs.every(s => s.completed);
-    const leader = project ? isProjectLeader(project) : false;
-    const isCompleted = task.status === 'completed';
+
+    // Resolve the project even if it wasn't passed in
+    const resolvedProject = project
+        || (window.projects || []).find(p => String(p.id) === String(task.project_id));
+    const leader = resolvedProject ? isProjectLeader(resolvedProject) : false;
+
+    const isCompleted  = task.status === 'completed';
     const isInProgress = task.status === 'in-progress';
-    const isPending = task.status === 'pending';
+    const isPending    = task.status === 'pending';
+
+    // 👇 Anyone can start / pause / reopen
+    const canStart  = !isCompleted && isPending;
+    const canPause  = !isCompleted && isInProgress;
+    const canReopen = !isCompleted && isInProgress;  // pause = reopen for non-leader
+
+    // 👇 Only leader can finalize
     const canComplete = leader && allSubsDone && !isCompleted;
-    const canReopen = leader && isCompleted;
-    const canStart = !isCompleted && isPending;
-    const canPause = !isCompleted && isInProgress;
+    const canFinalReopen = leader && isCompleted;
 
     return `
-        ${canStart
-            ? `<button type="button" data-gaction="start" data-id="${task.id}" class="row-action-btn row-action-start" title="Start task">
-                   <i class="bx bx-play"></i>
-               </button>`
-            : ''}
-        ${canPause
-            ? `<button type="button" data-gaction="pause" data-id="${task.id}" class="row-action-btn row-action-pause" title="Pause task">
-                   <i class="bx bx-pause"></i>
-               </button>`
-            : ''}
-        ${canComplete
-            ? `<button type="button" data-gaction="complete" data-id="${task.id}" class="row-action-btn row-action-complete" title="Mark task complete">
-                   <i class="bx bx-check-double"></i>
-               </button>`
-            : ''}
-        ${canReopen
-            ? `<button type="button" data-gaction="reopen" data-id="${task.id}" class="row-action-btn row-action-reopen" title="Reopen task">
-                   <i class="bx bx-undo"></i>
-               </button>`
-            : ''}
+        ${canStart ? `
+            <button type="button" data-gaction="start" data-id="${task.id}"
+                    class="row-action-btn row-action-start" title="Start task">
+                <i class="bx bx-play"></i>
+            </button>` : ''}
+
+        ${canPause ? `
+            <button type="button" data-gaction="pause" data-id="${task.id}"
+                    class="row-action-btn row-action-pause" title="Pause task">
+                <i class="bx bx-pause"></i>
+            </button>` : ''}
+
+        ${canComplete ? `
+            <button type="button" data-gaction="complete" data-id="${task.id}"
+                    class="row-action-btn row-action-complete" title="Mark task complete">
+                <i class="bx bx-check-double"></i>
+            </button>` : ''}
+
+        ${canFinalReopen ? `
+            <button type="button" data-gaction="reopen" data-id="${task.id}"
+                    class="row-action-btn row-action-reopen" title="Reopen task">
+                <i class="bx bx-undo"></i>
+            </button>` : ''}
+
         <button type="button" data-gaction="comments" data-id="${task.id}" title="View comments">
             <i class="bx bx-message-rounded-dots"></i>
         </button>
-        ${showAttachment
-            ? `<button type="button" data-gaction="attachment" data-id="${task.id}" title="Upload final version">
-                   <i class="bx bx-paperclip"></i>
-               </button>`
-            : ''}
+
+        ${showAttachment ? `
+            <button type="button" data-gaction="attachment" data-id="${task.id}"
+                    title="Upload final version">
+                <i class="bx bx-paperclip"></i>
+            </button>` : ''}
+
         <button type="button" data-gaction="add-subtask" data-id="${task.id}" title="Add subtask">
             <i class="bx bx-list-plus"></i>
         </button>
+
         <button type="button" data-gaction="edit" data-id="${task.id}" title="Edit task">
             <i class="bx bx-edit"></i>
         </button>
+
         <button type="button" data-gaction="delete" data-id="${task.id}" title="Delete task">
             <i class="bx bx-trash"></i>
         </button>
@@ -1280,16 +1949,9 @@ function groupTaskActions(task, options = {}) {
 // 8. ATTACHMENTS
 // ============================================================================
 
-/**
- * NEW (#7) — Task-level attachments render as "Final version" chips.
- * Subtask-level attachments render as "v1 v2 v3" chips.
- */
 function renderAttachmentChips(itemId) {
     const files = window._GroupState.attachments[itemId] || [];
     if (!files.length) return '';
-
-    const isTaskLevel = files.some(f => f.task_id);
-    const label = isTaskLevel ? 'Final version' : 'version';
 
     return `
         <span class="attachment-list">
@@ -1364,10 +2026,6 @@ async function uploadGroupAttachment(file, { taskId = null, subtaskId = null, co
     return data;
 }
 
-/**
- * Attach for tasks: single final version.
- * Attach for subtasks: auto-increments version number.
- */
 async function attachGroupFile(itemId, projectId, isSubtask = false) {
     const input = document.createElement('input');
     input.type = 'file';
@@ -1380,7 +2038,6 @@ async function attachGroupFile(itemId, projectId, isSubtask = false) {
 
         let version = null;
         if (isSubtask) {
-            // Determine next version = current max + 1
             const existing = window._GroupState.attachments[itemId] || [];
             const maxV = existing.reduce((m, f) => Math.max(m, f.version || 0), 0);
             version = maxV + 1;
@@ -1398,7 +2055,7 @@ async function attachGroupFile(itemId, projectId, isSubtask = false) {
         const ids = projectTasks.map(t => t.id);
         await loadSubtasksForTasks(ids);
         await loadGroupComments(ids);
-        await loadGroupAttachments(ids);
+        await loadGroupAttachments(ids, projectId);
 
         window.showToastMsg(isSubtask ? `Version ${version} uploaded` : 'Final version uploaded');
         renderProjectWorkspace(projectId);
@@ -1453,12 +2110,7 @@ async function deleteGroupAttachment(attachmentId, projectId) {
 // 9. SUBTASK ACTIONS
 // ============================================================================
 
-/**
- * FIX (#5) — Rebuild the modal fresh each time. This avoids stale
- * onsubmit handlers and event listener stacking.
- */
 function addGroupSubtask(task, projectId, members = []) {
-    // Remove existing modal if any
     document.getElementById('addSubtaskModalRoot')?.remove();
 
     const root = document.createElement('div');
@@ -1531,7 +2183,6 @@ function addGroupSubtask(task, projectId, members = []) {
         }
     });
 
-    // Show + focus
     requestAnimationFrame(() => {
         document.getElementById('addSubtaskModalBackdrop').classList.add('show');
         document.getElementById('addSubtaskModal').classList.add('show');
@@ -1540,35 +2191,86 @@ function addGroupSubtask(task, projectId, members = []) {
 }
 
 async function deleteGroupSubtask(subtaskId, projectId) {
+    console.log('[deleteGroupSubtask] called', { subtaskId, projectId });
+
     const subtask = Object.values(window._GroupState.subtasksByTask || {})
         .flat().find(s => String(s.id) === String(subtaskId));
+
+    if (!subtask) {
+        console.warn('[deleteGroupSubtask] subtask not found in state');
+        window.showToast('Subtask not found — refreshing', 'warning', 2500);
+        renderProjectWorkspace(projectId);
+        return;
+    }
+
     const confirmed = await window.showConfirm({
         title: 'Delete this subtask?',
-        message: `"${subtask?.title || 'This subtask'}" will be permanently deleted.`,
-        confirmText: 'Delete', cancelText: 'Cancel', variant: 'danger', icon: 'bx-trash'
+        message: `"${subtask.title || 'This subtask'}" will be permanently deleted.`,
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        variant: 'danger',
+        icon: 'bx-trash'
     });
+    console.log('[deleteGroupSubtask] confirmed?', confirmed);
     if (!confirmed) return;
+
     try {
+        // 1. Remove any attachments tied to this subtask
         const attached = Object.values(window._GroupState.attachments || {})
             .flat().filter(f => String(f.subtask_id) === String(subtaskId));
+
         if (attached.length) {
             const paths = attached.map(f => f.file_path).filter(Boolean);
-            if (paths.length) await supabase.storage.from('task-attachments').remove(paths);
-            await supabase.from('task_attachments').delete().in('id', attached.map(f => f.id));
+            if (paths.length) {
+                const { error: storageErr } = await supabase.storage
+                    .from('task-attachments').remove(paths);
+                if (storageErr) console.warn('Storage cleanup failed:', storageErr);
+            }
+            const { error: attachDelErr } = await supabase
+                .from('task_attachments')
+                .delete()
+                .in('id', attached.map(f => f.id));
+            if (attachDelErr) console.warn('Attachment row delete failed:', attachDelErr);
         }
-        const { error } = await supabase.from('subtasks').delete().eq('id', subtaskId);
-        if (error) throw error;
-        if (subtask?.task_id && window._GroupState.subtasksByTask[subtask.task_id]) {
+
+        // 2. Delete the subtask row itself
+        const { error: delErr, count } = await supabase
+            .from('subtasks')
+            .delete({ count: 'exact' })
+            .eq('id', subtaskId);
+
+        console.log('[deleteGroupSubtask] delete result', { delErr, count });
+
+        if (delErr) throw delErr;
+
+        if (!count) {
+            // Nothing was deleted → RLS blocked it
+            throw new Error('Delete was blocked (no rows affected — check RLS).');
+        }
+
+        // 3. Update local state
+        if (subtask.task_id && window._GroupState.subtasksByTask[subtask.task_id]) {
             window._GroupState.subtasksByTask[subtask.task_id] =
-                window._GroupState.subtasksByTask[subtask.task_id].filter(s => String(s.id) !== String(subtaskId));
+                window._GroupState.subtasksByTask[subtask.task_id]
+                    .filter(s => String(s.id) !== String(subtaskId));
         }
-        window.showToastMsg('Subtask deleted');
+        delete window._GroupState.attachments[subtaskId];
+
+        window.showToast('Subtask deleted', 'success');
         renderProjectWorkspace(projectId);
     } catch (err) {
-        console.error('Delete subtask failed:', err);
-        window.showToastMsg('Failed to delete subtask');
+        console.error('[deleteGroupSubtask] failed:', err);
+        window.showToast(
+            err.message?.includes('RLS') || err.message?.includes('policy')
+                ? 'Only the project owner or task creator can delete this subtask'
+                : 'Failed to delete subtask',
+            'error',
+            4000
+        );
     }
 }
+
+
 
 async function toggleGroupSubtask(subtaskId, projectId) {
     const subtask = Object.values(window._GroupState.subtasksByTask || {})
@@ -1717,7 +2419,7 @@ async function maybeOfferTaskCompletion(taskId, projectId) {
 }
 
 // ============================================================================
-// 11. ADD MEMBER MODAL (NEW)
+// 11. ADD MEMBER MODAL
 // ============================================================================
 
 async function openAddMemberModal(projectId) {
@@ -1726,7 +2428,6 @@ async function openAddMemberModal(projectId) {
     const project = (window.projects || []).find(p => String(p.id) === String(projectId));
     if (!project) return;
 
-    // Fetch current members AND all candidate profiles in parallel
     const [currentMembers, allProfilesResponse] = await Promise.all([
         window.loadProjectMembers(projectId),
         supabase.from('profiles').select('id, full_name, email').limit(500)
@@ -1740,7 +2441,7 @@ async function openAddMemberModal(projectId) {
     }
 
     const currentIds = new Set(currentMembers.map(m => String(m.id)));
-    const leaderId = String(project.owner_id || project.created_by || '');
+    const leaderId = String(project.created_by || '');
     const candidates = (allProfiles || []).filter(p => !currentIds.has(String(p.id)));
 
     const root = document.createElement('div');
@@ -1754,8 +2455,6 @@ async function openAddMemberModal(projectId) {
             </div>
 
             <div class="modal-body" style="padding:16px 20px; max-height:70vh; overflow-y:auto">
-
-                <!-- SECTION 1: Current members -->
                 <div class="add-member-section">
                     <h4 class="add-member-section-title">
                         <i class="bx bx-group"></i> Current members
@@ -1785,7 +2484,6 @@ async function openAddMemberModal(projectId) {
                     </div>
                 </div>
 
-                <!-- SECTION 2: Users not yet in the project -->
                 <div class="add-member-section">
                     <h4 class="add-member-section-title">
                         <i class="bx bx-user-plus"></i> Add new
@@ -1874,6 +2572,131 @@ async function openAddMemberModal(projectId) {
     requestAnimationFrame(() => {
         document.getElementById('addMemberBackdrop').classList.add('show');
         document.getElementById('addMemberModal').classList.add('show');
+    });
+}
+
+function openCreateProjectModal() {
+    document.getElementById('createProjectModalRoot')?.remove();
+
+    const root = document.createElement('div');
+    root.id = 'createProjectModalRoot';
+    root.innerHTML = `
+        <div class="modal-backdrop" id="createProjectBackdrop"></div>
+        <div class="modal" id="createProjectModal" style="width:460px" role="dialog" aria-modal="true">
+            <div class="modal-head">
+                <div><div class="eyebrow">New Project</div><h2>Create a Group Project</h2></div>
+                <button type="button" class="icon-btn" id="closeCreateProjectModal" title="Close">
+                    <i class="bx bx-x"></i>
+                </button>
+            </div>
+            <form id="createProjectForm">
+                <div class="form-grid">
+                    <div class="full">
+                        <label>Project Name *</label>
+                        <input type="text" id="cpName" required maxlength="120" placeholder="e.g. Website Redesign">
+                    </div>
+                    <div class="full">
+                        <label>Description</label>
+                        <textarea id="cpDescription" rows="3" placeholder="Optional details..."></textarea>
+                    </div>
+                    <div>
+                        <label>Status</label>
+                        <select id="cpStatus">
+                            <option value="planning" selected>Planning</option>
+                            <option value="active">Active</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label>Due Date</label>
+                        <input type="date" id="cpDueDate">
+                    </div>
+                </div>
+                <p class="form-note" id="cpError"></p>
+                <div class="modal-actions">
+                    <button type="button" class="btn secondary" id="cancelCreateProject">Cancel</button>
+                    <button type="submit" class="btn primary" id="cpSubmit">Create Project</button>
+                </div>
+            </form>
+        </div>
+    `;
+    document.body.appendChild(root);
+
+    const closeModal = () => root.remove();
+    document.getElementById('closeCreateProjectModal').addEventListener('click', closeModal);
+    document.getElementById('cancelCreateProject').addEventListener('click', closeModal);
+    document.getElementById('createProjectBackdrop').addEventListener('click', closeModal);
+
+    document.getElementById('createProjectForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const errorEl = document.getElementById('cpError');
+        errorEl.textContent = '';
+
+        const name = document.getElementById('cpName').value.trim();
+        const description = document.getElementById('cpDescription').value.trim();
+        const status = document.getElementById('cpStatus').value;
+        const due_date = document.getElementById('cpDueDate').value || null;
+
+        if (!name) {
+            errorEl.textContent = 'Project name is required.';
+            return;
+        }
+
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+            errorEl.textContent = 'Please log in again.';
+            return;
+        }
+
+        const submitBtn = document.getElementById('cpSubmit');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Creating...';
+
+        try {
+            // 1. Insert the project
+            const { data: newProject, error: projErr } = await supabase
+                .from('projects')
+                .insert({
+                    name,
+                    description: description || null,
+                    status,
+                    due_date,
+                    created_by: user.id,
+                    progress: 0
+                })
+                .select()
+                .single();
+
+            if (projErr) throw projErr;
+
+            // 2. Add the creator as a member too (so member queries return them)
+            const { error: memberErr } = await supabase
+                .from('project_members')
+                .insert({
+                    project_id: newProject.id,
+                    user_id: user.id
+                });
+            if (memberErr) console.warn('Could not add creator as member:', memberErr);
+
+            // 3. Clear member cache so the new project sees the right members
+            if (window._projectMemberCache) delete window._projectMemberCache[newProject.id];
+
+            // 4. Reload projects and refresh the grid
+            await window.loadProjects();
+            closeModal();
+            window.showToast(`Project "${name}" created`, 'success');
+            renderGroupRoot();
+        } catch (err) {
+            console.error('Create project failed:', err);
+            errorEl.textContent = err.message || 'Failed to create project. Please try again.';
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Create Project';
+        }
+    });
+
+    requestAnimationFrame(() => {
+        document.getElementById('createProjectBackdrop').classList.add('show');
+        document.getElementById('createProjectModal').classList.add('show');
+        document.getElementById('cpName').focus();
     });
 }
 
@@ -1968,7 +2791,7 @@ function renderGroupComments(tasks, members) {
 }
 
 // ============================================================================
-// 13. SUBTASK DETAIL PANEL (with versions)
+// 13. SUBTASK DETAIL PANEL
 // ============================================================================
 
 function getSubtaskById(subtaskId) {
@@ -1986,7 +2809,6 @@ function renderSubtaskDetailPanel(members) {
     const assigneeInitial = (assigneeName || '?').charAt(0).toUpperCase();
 
     const files = window._GroupState.attachments[subtask.id] || [];
-    // Sort by version (v1, v2, v3, then final)
     files.sort((a, b) => (a.version || 9999) - (b.version || 9999));
 
     const filesHtml = files.length === 0
@@ -2092,13 +2914,26 @@ function bindGroupWorkspaceEvents(projectId, tasks, members = [], project = null
         window.openTaskModal({ mode: 'add', taskType: 'Group', projectId });
     });
 
-        // Attach a project-level file (leader only)
     const projectAttachBtn = document.getElementById('attachProjectFileBtn');
     if (projectAttachBtn) {
         projectAttachBtn.addEventListener('click', () => {
             attachProjectFile(projectId, project);
         });
     }
+
+    document.querySelectorAll('[data-subtask-edit]').forEach(btn => {
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            const subtaskId = btn.dataset.subtaskEdit;
+            const subtask = Object.values(window._GroupState.subtasksByTask || {})
+                .flat().find(s => String(s.id) === String(subtaskId));
+            if (!subtask) {
+                window.showToast('Subtask not found', 'warning');
+                return;
+            }
+            editGroupSubtask(subtask, projectId, members);
+        });
+    });
 
     document.querySelectorAll('[data-gview]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -2137,7 +2972,7 @@ function bindGroupWorkspaceEvents(projectId, tasks, members = [], project = null
     document.querySelectorAll('[data-gaction="attachment"]').forEach(btn => {
         btn.addEventListener('click', e => {
             e.stopPropagation();
-            attachGroupFile(btn.dataset.id, projectId, false); // task-level: final version
+            attachGroupFile(btn.dataset.id, projectId, false);
         });
     });
 
@@ -2189,14 +3024,7 @@ function bindGroupWorkspaceEvents(projectId, tasks, members = [], project = null
     document.querySelectorAll('[data-subtask-attachment]').forEach(btn => {
         btn.addEventListener('click', e => {
             e.stopPropagation();
-            attachGroupFile(btn.dataset.subtaskAttachment, projectId, true); // subtask: versioned
-        });
-    });
-
-    document.querySelectorAll('[data-subtask-delete]').forEach(btn => {
-        btn.addEventListener('click', e => {
-            e.stopPropagation();
-            deleteGroupSubtask(btn.dataset.subtaskDelete, projectId);
+            attachGroupFile(btn.dataset.subtaskAttachment, projectId, true);
         });
     });
 
@@ -2253,6 +3081,7 @@ function bindGroupWorkspaceEvents(projectId, tasks, members = [], project = null
         if (countEl) countEl.textContent = String(count);
         label?.classList.toggle('has-files', count > 0);
     });
+
     document.querySelectorAll('[data-gsort]').forEach(th => {
         th.addEventListener('dblclick', () => toggleGroupSort(th.dataset.gsort));
     });
@@ -2277,13 +3106,18 @@ function bindGroupWorkspaceEvents(projectId, tasks, members = [], project = null
             window.showToastMsg('Failed to post comment');
             return;
         }
-
-        // const projectAttachBtn = document.getElementById('attachProjectFileBtn');
-        // if (projectAttachBtn) {
-        //     projectAttachBtn.addEventListener('click', () => {
-        //         attachProjectFile(projectId, project);
-        //     });
-        // }
+        // Delegated handler — survives re-renders
+        const container = document.getElementById('GroupTasksContainer');
+        if (container && !container.dataset.subtaskDeleteBound) {
+            container.dataset.subtaskDeleteBound = '1';
+            container.addEventListener('click', (e) => {
+                const delBtn = e.target.closest('[data-subtask-delete]');
+                if (!delBtn) return;
+                e.preventDefault();
+                e.stopPropagation();
+                deleteGroupSubtask(delBtn.dataset.subtaskDelete, projectId);
+            });
+        }
 
         const files = Array.from(document.getElementById('groupCommentAttachment')?.files || []);
         for (const file of files) await uploadGroupAttachment(file, { commentId: newComment.id });
@@ -2291,7 +3125,7 @@ function bindGroupWorkspaceEvents(projectId, tasks, members = [], project = null
         const projectTasks = (window.GroupTasks || []).filter(t => String(t.project_id) === String(projectId));
         const ids = projectTasks.map(t => t.id);
         await loadGroupComments(ids);
-        await loadGroupAttachments(ids);
+        await loadGroupAttachments(ids, projectId);
         window.showToastMsg('Comment posted');
         renderProjectWorkspace(projectId);
     });
@@ -2310,6 +3144,11 @@ async function attachProjectFile(projectId, project) {
         for (const file of files) {
             await uploadProjectAttachment(file, projectId, project);
         }
+
+        // Reload project attachments
+        const projectTasks = (window.GroupTasks || []).filter(t => String(t.project_id) === String(projectId));
+        const ids = projectTasks.map(t => t.id);
+        await loadGroupAttachments(ids, projectId);
 
         window.showToastMsg(`${files.length} project file${files.length > 1 ? 's' : ''} uploaded`);
         renderProjectWorkspace(projectId);
@@ -2338,7 +3177,6 @@ async function uploadProjectAttachment(file, projectId, project) {
         return null;
     }
 
-    // Store as a task_attachment with no task/subtask/comment → project-level
     const { data, error: dbErr } = await supabase
         .from('task_attachments')
         .insert({
@@ -2350,7 +3188,7 @@ async function uploadProjectAttachment(file, projectId, project) {
             file_path: path,
             file_type: file.type || null,
             file_size: file.size,
-            project_id: projectId // requires adding this column
+            project_id: projectId
         })
         .select().single();
 
@@ -2385,4 +3223,43 @@ document.addEventListener('click', async (event) => {
     event.preventDefault();
     event.stopPropagation();
     await openGroupAttachment(button.dataset.openAttachment);
+});
+
+// Global delegated handler for subtask delete — attach ONCE on document
+document.addEventListener('click', (e) => {
+    const delBtn = e.target.closest('[data-subtask-delete]');
+    if (!delBtn) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const projectId = window._GroupState.activeProject;
+    if (!projectId) return;
+
+    deleteGroupSubtask(delBtn.dataset.subtaskDelete, projectId);
+});
+
+// Global delegated handler for subtask edit — survives re-renders
+document.addEventListener('click', (e) => {
+    const editBtn = e.target.closest('[data-subtask-edit]');
+    if (!editBtn) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const subtaskId = editBtn.dataset.subtaskEdit;
+    const projectId = window._GroupState.activeProject;
+    if (!projectId) return;
+
+    const subtask = Object.values(window._GroupState.subtasksByTask || {})
+        .flat().find(s => String(s.id) === String(subtaskId));
+
+    if (!subtask) {
+        window.showToast('Subtask not found — refreshing', 'warning', 2500);
+        renderProjectWorkspace(projectId);
+        return;
+    }
+
+    // Look up members of the current project so the dropdown is populated
+    window.loadProjectMembers(projectId).then(members => {
+        editGroupSubtask(subtask, projectId, members);
+    });
 });
