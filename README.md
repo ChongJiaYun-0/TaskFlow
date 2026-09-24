@@ -288,7 +288,7 @@ TaskFlow provides notifications for:
 
 **Deployment**
 
-* Vercel
+* Vercel: https://taskflow-vercel-version.vercel.app/
 
 ---
 
@@ -598,23 +598,3 @@ Potential future features:
 * Mobile application
 
 ---
-
-## 📜 License
-
-This project is intended for educational, development, and demonstration purposes.
-
-```text
-MIT License
-```
-
----
-
-## ❤️ TaskFlow
-
-**Plan. Organize. Collaborate. Complete.**
-
-Built with:
-
-```text
-HTML • CSS • JavaScript • Supabase • PostgreSQL • Vercel
-```
